@@ -3,7 +3,7 @@
 //! 合成ビュー (active / 孤児 worktree) はここだけが知っている。
 
 use crate::domain::{self, WorkspaceId};
-use crate::roles::{devcontainer, session, tracker, worktree};
+use crate::roles::{devcontainer, repostore, session, tracker, worktree};
 use crate::settings;
 use serde_json::{json, Value};
 use std::collections::HashSet;
@@ -18,6 +18,71 @@ pub fn list_projects(args: &[String]) -> CmdResult {
     };
     let user = validated("user", user)?;
     Ok(Value::Array(tracker::open_projects(&user)))
+}
+
+pub fn list_repos(home: &Path, args: &[String]) -> CmdResult {
+    let project = flag_value(args, "--project").unwrap_or_default();
+
+    let repos: Vec<String> = if project.is_empty() || project == "none" {
+        repostore::list_ns_repos()
+    } else {
+        // Tracker (Project 所属) と RepoStore (ローカルにある) の交差
+        let user = match flag_value(args, "--user") {
+            Some(user) => user,
+            None => tracker::resolve_user().ok_or("failed to resolve GitHub user")?,
+        };
+        let user = validated("user", user)?;
+        let project = validated("project", project)?;
+        let local: HashSet<String> = repostore::list_ns_repos().into_iter().collect();
+        tracker::project_repos(&user, &project)
+            .into_iter()
+            .filter(|repo| local.contains(repo))
+            .collect()
+    };
+
+    Ok(Value::Array(
+        repos
+            .iter()
+            .map(|ns_repo| json!({ "ns_repo": ns_repo, "active_count": active_count(home, ns_repo) }))
+            .collect(),
+    ))
+}
+
+pub fn list_workspaces(home: &Path) -> CmdResult {
+    let entries = repostore::list_ns_repos_in_ghq_order()
+        .into_iter()
+        .flat_map(|ns_repo| {
+            let main_entry = session::workspace_session_exists(&domain::session_name(&ns_repo, &WorkspaceId::Main))
+                .then(|| {
+                    json!({
+                        "ns_repo": ns_repo, "id": "main", "title": "main",
+                        "active": true, "closed": false,
+                        "devcontainer": devcontainer::state(&ns_repo, "main"),
+                    })
+                });
+
+            let worktree_entries: Vec<Value> = active_issue_ids(home, &ns_repo)
+                .into_iter()
+                .map(|id| {
+                    let active = session::workspace_session_exists(&domain::session_name(
+                        &ns_repo,
+                        &WorkspaceId::Issue(id.clone()),
+                    ));
+                    let (title, closed) = tracker::issue_title_and_state(&ns_repo, &id)
+                        .map(|(title, state)| (title, state == "CLOSED"))
+                        .unwrap_or_else(|| ("unknown".to_owned(), false));
+                    json!({
+                        "ns_repo": ns_repo, "id": id, "title": title,
+                        "active": active, "closed": closed,
+                        "devcontainer": devcontainer::state(&ns_repo, &id),
+                    })
+                })
+                .collect();
+
+            main_entry.into_iter().chain(worktree_entries).collect::<Vec<_>>()
+        })
+        .collect();
+    Ok(Value::Array(entries))
 }
 
 pub fn list_issues(home: &Path, args: &[String]) -> CmdResult {
@@ -76,15 +141,13 @@ pub fn list_devcontainer_configs(home: &Path, args: &[String]) -> CmdResult {
 pub fn open(home: &Path, args: &[String]) -> CmdResult {
     let ns_repo = required(args, "--repo", "repo")?;
     let issue = required(args, "--issue", "issue")?;
-    if !flag_values(args, "--config").is_empty() {
-        return Err("--config is not yet implemented in the Rust port".to_owned());
-    }
+    let configs = flag_values(args, "--config");
 
     let id = WorkspaceId::parse(&issue);
     let manager = settings::session_manager(home)?;
     let workspace = domain::workspace_path(home, &ns_repo, &id);
 
-    // 依存の順序: worktree (Issue のみ) → session → (devcontainer: 未実装)
+    // 依存の順序: worktree (Issue のみ) → session → devcontainer
     if let WorkspaceId::Issue(n) = &id {
         if !workspace.is_dir() {
             worktree::add(&domain::ghq_path(home, &ns_repo), &domain::branch_name(n), &workspace)?;
@@ -93,9 +156,29 @@ pub fn open(home: &Path, args: &[String]) -> CmdResult {
     let session = domain::session_name(&ns_repo, &id);
     session::ensure(manager, &session, &workspace)?;
 
-    let message = match &id {
+    let outcomes = configs
+        .iter()
+        .map(|cfg| {
+            let config_path = Path::new(cfg);
+            let cname = devcontainer::config_name(&workspace, config_path);
+            let outcome = devcontainer::up(home, &ns_repo, &id, &workspace, config_path, &cname)
+                .map_err(|_| format!("devcontainer up failed for {cfg}"))?;
+            // 配線: DevContainer が exec コマンドを組み立て、SessionManager が
+            // 🐳 ウィンドウを追加する (dedup キーはコンテナ ID)
+            if let Some((cid, command)) = devcontainer::exec_command(&ns_repo, &id, &cname) {
+                session::add_window(manager, &session, "🐳", &command, &cid);
+            }
+            Ok(format!("{}: {cname}", outcome.label()))
+        })
+        .collect::<Result<Vec<String>, String>>()?;
+
+    let base_message = match &id {
         WorkspaceId::Main => format!("Opened {ns_repo} (main) [{}]", manager.name()),
         WorkspaceId::Issue(n) => format!("Opened {ns_repo} #{n} [{}]", manager.name()),
+    };
+    let message = match outcomes.is_empty() {
+        true => base_message,
+        false => format!("{base_message} + devcontainer(s) [{}]", outcomes.join(", ")),
     };
     Ok(json!({
         "status": "ok",
@@ -155,6 +238,16 @@ fn active_issue_ids(home: &Path, ns_repo: &str) -> Vec<String> {
         })
         .map(|(_, issue)| issue)
         .collect()
+}
+
+/// 合成ビュー: リポジトリ内のアクティブ Workspace 数
+/// (アクティブな worktree + main セッションの有無)。
+fn active_count(home: &Path, ns_repo: &str) -> usize {
+    active_issue_ids(home, ns_repo).len()
+        + usize::from(session::workspace_session_exists(&domain::session_name(
+            ns_repo,
+            &WorkspaceId::Main,
+        )))
 }
 
 fn issue_entry(id: &str, title: &str, active: bool, closed: bool, dc: &str) -> Value {

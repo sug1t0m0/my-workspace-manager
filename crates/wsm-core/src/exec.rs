@@ -1,26 +1,27 @@
 //! 外部コマンド実行の薄いラッパ。プロセス起動の副作用はここに閉じ、
 //! 呼び出し側は「出力を得る / 成否を見る / 失敗を無視する」の 3 語彙だけを使う。
 
+use std::ffi::OsStr;
 use std::path::PathBuf;
 use std::process::{Command, Output};
 
-fn output(cmd: &str, args: &[&str]) -> Option<Output> {
+fn output(cmd: &str, args: &[impl AsRef<OsStr>]) -> Option<Output> {
     Command::new(cmd).args(args).output().ok()
 }
 
 /// コマンドが成功したときだけ stdout を返す (失敗・起動不能は None)。
-pub fn stdout_if_ok(cmd: &str, args: &[&str]) -> Option<String> {
+pub fn stdout_if_ok(cmd: &str, args: &[impl AsRef<OsStr>]) -> Option<String> {
     output(cmd, args)
         .filter(|o| o.status.success())
         .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
 }
 
-pub fn succeeds(cmd: &str, args: &[&str]) -> bool {
+pub fn succeeds(cmd: &str, args: &[impl AsRef<OsStr>]) -> bool {
     output(cmd, args).is_some_and(|o| o.status.success())
 }
 
 /// 失敗してもよい呼び出し (zsh 版の `|| true` に相当)。
-pub fn run_ignoring_failure(cmd: &str, args: &[&str]) {
+pub fn run_ignoring_failure(cmd: &str, args: &[impl AsRef<OsStr>]) {
     let _ = output(cmd, args);
 }
 

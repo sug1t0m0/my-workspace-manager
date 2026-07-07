@@ -40,6 +40,42 @@ pub fn open_issues(ns_repo: &str) -> Vec<(String, String)> {
     .unwrap_or_default()
 }
 
+/// Project に属するリポジトリの ns_repo 一覧。取得できなければ空。
+/// GraphQL クエリは zsh 版と同一 (会話の互換性のため)。
+pub fn project_repos(user: &str, project: &str) -> Vec<String> {
+    const QUERY: &str = "\n      query($owner: String!, $num: Int!) {\n        user(login: $owner) {\n          projectV2(number: $num) {\n            repositories(first: 100) {\n              nodes { nameWithOwner }\n            }\n          }\n        }\n      }";
+    exec::stdout_if_ok(
+        "gh",
+        &[
+            "api",
+            "graphql",
+            "-f",
+            &format!("query={QUERY}"),
+            "-f",
+            &format!("owner={user}"),
+            "-F",
+            &format!("num={project}"),
+            "-q",
+            ".data.user.projectV2.repositories.nodes[].nameWithOwner",
+        ],
+    )
+    .map(|out| out.lines().filter(|l| !l.is_empty()).map(str::to_owned).collect())
+    .unwrap_or_default()
+}
+
+/// 単一 Issue のタイトルと状態 (list-workspaces 用)。
+pub fn issue_title_and_state(ns_repo: &str, issue: &str) -> Option<(String, String)> {
+    exec::stdout_if_ok(
+        "gh",
+        &["issue", "view", issue, "--repo", ns_repo, "--json", "title,state", "-q", r#""\(.title)\t\(.state)""#],
+    )
+    .and_then(|out| {
+        out.trim_end_matches('\n')
+            .split_once('\t')
+            .map(|(title, state)| (title.to_owned(), state.to_owned()))
+    })
+}
+
 /// 単一 Issue のタイトル (孤児 worktree の解決用)。
 pub fn issue_title(ns_repo: &str, issue: &str) -> Option<String> {
     exec::stdout_if_ok(

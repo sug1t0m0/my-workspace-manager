@@ -35,13 +35,12 @@ fn run(args: &[String]) -> commands::CmdResult {
     let (subcmd, rest) = args.split_first().ok_or(USAGE)?;
     match subcmd.as_str() {
         "list-projects" => commands::list_projects(rest),
+        "list-repos" => commands::list_repos(&home, rest),
         "list-issues" => commands::list_issues(&home, rest),
+        "list-workspaces" => commands::list_workspaces(&home),
         "list-devcontainer-configs" => commands::list_devcontainer_configs(&home, rest),
         "open" => commands::open(&home, rest),
         "remove" => commands::remove(&home, rest),
-        "list-repos" | "list-workspaces" => {
-            Err(format!("{subcmd} is not yet implemented in the Rust port"))
-        }
         _ => Err(USAGE.to_owned()),
     }
 }

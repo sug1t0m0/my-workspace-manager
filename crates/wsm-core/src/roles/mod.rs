@@ -2,6 +2,7 @@
 //! (合成はオーケストレーション層 = commands モジュールが行う)。
 
 pub mod devcontainer;
+pub mod repostore;
 pub mod session;
 pub mod tracker;
 pub mod worktree;

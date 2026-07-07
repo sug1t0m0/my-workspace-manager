@@ -50,6 +50,31 @@ pub fn remove_workspace_sessions(session: &str) {
     }
 }
 
+/// セッションに、指定コマンドを実行するウィンドウを追加する。冪等で、
+/// 同じ dedup_key を持つペインが生きていれば何もしない (tmux はキーを
+/// pane オプション @wsm_cid に記録する)。ウィンドウ概念を持たない herdr は noop。
+pub fn add_window(manager: SessionManager, session: &str, name: &str, command: &str, dedup_key: &str) {
+    match manager {
+        SessionManager::Tmux => {
+            let already = exec::stdout_if_ok("tmux", &["list-panes", "-s", "-t", session, "-F", "#{@wsm_cid}"])
+                .is_some_and(|out| out.lines().any(|line| line == dedup_key));
+            if already {
+                return;
+            }
+            let pane = exec::stdout_if_ok(
+                "tmux",
+                &["new-window", "-d", "-P", "-F", "#{pane_id}", "-t", &format!("{session}:"), "-n", name, command],
+            )
+            .map(|out| out.trim().to_owned())
+            .filter(|pane| !pane.is_empty());
+            if let Some(pane) = pane {
+                exec::run_ignoring_failure("tmux", &["set-option", "-p", "-t", &pane, "@wsm_cid", dedup_key]);
+            }
+        }
+        SessionManager::Herdr => {}
+    }
+}
+
 /// UI が Terminal にそのまま渡すアタッチ用コマンド (open 応答の attach_command)。
 pub fn attach_command(manager: SessionManager, session: &str, workspace: &Path, home: &Path) -> String {
     match manager {
