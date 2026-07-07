@@ -187,8 +187,8 @@ pub fn exec_command(ns_repo: &str, id: &WorkspaceId, cname: &str) -> Option<(Str
         WorkspaceId::Main => format!("/workspaces/ghq/github.com/{ns_repo}"),
         WorkspaceId::Issue(n) => format!("/workspaces/worktrees/github.com/{ns_repo}/{n}"),
     };
-    let user_arg = remote_user.map(|u| format!("--user '{u}'")).unwrap_or_default();
-    let command = format!("docker exec -it {user_arg} -w '{workdir}' '{cid}' zsh");
+    let user_part = remote_user.map(|u| format!(" --user '{u}'")).unwrap_or_default();
+    let command = format!("docker exec -it{user_part} -w '{workdir}' '{cid}' zsh");
     Some((cid, command))
 }
 

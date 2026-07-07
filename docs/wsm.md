@@ -395,7 +395,8 @@ remove は逆順で破棄する(Terminal は管理外なので対象外):
 ```
 
 `list-issues --repo <ns_repo>`
-→ `main` + open な Issue + 孤児 worktree(closed だがセッションが残っているもの)。
+→ `main` + open な Issue + 孤児 worktree(closed だがセッションが残っているもの。
+並びは worktree 一覧順)。
 ```json
 [{"id": "main", "title": "...", "active": false, "closed": false, "devcontainer": "none"}]
 ```

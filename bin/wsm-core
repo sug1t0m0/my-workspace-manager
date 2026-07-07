@@ -401,10 +401,11 @@ _devcontainer_exec_command() {
   remote_user=$(docker inspect --format '{{index .Config.Labels "devcontainer.metadata"}}' "$cid" 2>/dev/null \
     | jq -r 'map(select(.remoteUser != null)) | .[0].remoteUser // empty' 2>/dev/null)
 
-  local user_arg=""
-  [[ -n "$remote_user" ]] && user_arg="--user '$remote_user'"
+  local exec_cmd="docker exec -it"
+  [[ -n "$remote_user" ]] && exec_cmd+=" --user '$remote_user'"
+  exec_cmd+=" -w '$container_workdir' '$cid' zsh"
 
-  printf '%s\t%s\n' "$cid" "docker exec -it $user_arg -w '$container_workdir' '$cid' zsh"
+  printf '%s\t%s\n' "$cid" "$exec_cmd"
 }
 
 # SessionManager role: add a window running <command> to <session>.
@@ -633,13 +634,16 @@ cmd_list_issues() {
     done <<< "$issues"
   fi
 
-  # Orphaned worktrees (closed issues still active)
-  for orphan_id in "${(@k)active_ids}"; do
-    local orphan_title=$(gh issue view "$orphan_id" --repo "$ns_repo" --json title -q '.title' 2>/dev/null) || true
-    local escaped_title=$(echo "${orphan_title:-unknown}" | jq -Rs '.[:-1]')
-    local dc=$(_devcontainer_state "$ns_repo" "$orphan_id")
-    items+=("{\"id\":\"$orphan_id\",\"title\":$escaped_title,\"active\":true,\"closed\":true,\"devcontainer\":\"$dc\"}")
-  done
+  # Orphaned worktrees (closed issues still active)。順序は worktree 一覧順 (契約)
+  if [[ -n "$wt_ids" ]]; then
+    while IFS= read -r orphan_id; do
+      [[ -n "${active_ids[$orphan_id]:-}" ]] || continue
+      local orphan_title=$(gh issue view "$orphan_id" --repo "$ns_repo" --json title -q '.title' 2>/dev/null) || true
+      local escaped_title=$(echo "${orphan_title:-unknown}" | jq -Rs '.[:-1]')
+      local dc=$(_devcontainer_state "$ns_repo" "$orphan_id")
+      items+=("{\"id\":\"$orphan_id\",\"title\":$escaped_title,\"active\":true,\"closed\":true,\"devcontainer\":\"$dc\"}")
+    done <<< "$wt_ids"
+  fi
 
   printf '%s\n' "${items[@]}" | jq -s '.'
 }

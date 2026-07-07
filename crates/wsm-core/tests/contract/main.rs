@@ -284,6 +284,71 @@ fn list_issues_combines_main_and_open_issues() {
     );
 }
 
+#[test]
+fn list_issues_shows_orphaned_worktrees_as_closed_in_worktree_order() {
+    // Arrange: Issue 41, 42 は open 一覧に出てこない (closed) が、
+    // worktree とセッションが残っている。43 だけが open
+    let env = TestEnv::new();
+    let home = env.home_str();
+    env.write_home("ghq/github.com/owner/repo/.gitkeep", "")
+        .write_home("worktrees/github.com/owner/repo/41/.gitkeep", "")
+        .write_home("worktrees/github.com/owner/repo/42/.gitkeep", "")
+        .stub(
+            "worktree list --porcelain",
+            &format!(
+                "worktree {home}/worktrees/github.com/owner/repo/41\nHEAD aaa\nbranch refs/heads/feature/41\n\nworktree {home}/worktrees/github.com/owner/repo/42\nHEAD bbb\nbranch refs/heads/feature/42\n\n"
+            ),
+        )
+        .stub("^tmux has-session -t =owner\\.repo-41$", "")
+        .stub("^tmux has-session -t =owner\\.repo-42$", "")
+        .stub("^docker ps -a", "")
+        .stub("^gh issue list --repo owner/repo", "43\tOther work\n")
+        .stub("^gh issue view 41 --repo owner/repo --json title -q", "Old bug\n")
+        .stub("^gh issue view 42 --repo owner/repo --json title -q", "Stale spike\n");
+
+    // Act
+    let out = env.run(&["list-issues", "--repo", "owner/repo"]);
+
+    // Assert: 孤児は closed:true & active:true で、worktree 一覧順に並ぶ
+    assert_eq!(out.status, Some(0));
+    assert_eq!(
+        out.stdout_json(),
+        json!([
+            { "id": "main", "title": "main", "active": false, "closed": false, "devcontainer": "none" },
+            { "id": "43", "title": "Other work", "active": false, "closed": false, "devcontainer": "none" },
+            { "id": "41", "title": "Old bug", "active": true, "closed": true, "devcontainer": "none" },
+            { "id": "42", "title": "Stale spike", "active": true, "closed": true, "devcontainer": "none" },
+        ])
+    );
+}
+
+#[test]
+fn list_issues_aggregates_devcontainer_states() {
+    // Arrange: Issue 42 のコンテナは停止のみ、43 は停止+稼働の混在
+    let env = TestEnv::new();
+    env.stub("^docker ps -a --filter label=wsm.ns-repo=owner/repo --filter label=wsm.issue-id=main ", "")
+        .stub("^docker ps -a --filter label=wsm.ns-repo=owner/repo --filter label=wsm.issue-id=42 ", "exited\n")
+        .stub(
+            "^docker ps -a --filter label=wsm.ns-repo=owner/repo --filter label=wsm.issue-id=43 ",
+            "exited\nrunning\n",
+        )
+        .stub("^gh issue list --repo owner/repo", "42\tFix bug\n43\tAdd feature\n");
+
+    // Act
+    let out = env.run(&["list-issues", "--repo", "owner/repo"]);
+
+    // Assert: 1 つでも running があれば running、行はあるが running がなければ stopped
+    assert_eq!(out.status, Some(0));
+    assert_eq!(
+        out.stdout_json(),
+        json!([
+            { "id": "main", "title": "main", "active": false, "closed": false, "devcontainer": "none" },
+            { "id": "42", "title": "Fix bug", "active": false, "closed": false, "devcontainer": "stopped" },
+            { "id": "43", "title": "Add feature", "active": false, "closed": false, "devcontainer": "running" },
+        ])
+    );
+}
+
 // --- list-devcontainer-configs ---
 
 #[test]
@@ -805,6 +870,107 @@ fn open_with_config_reuses_running_container_and_dedups_window() {
     assert!(
         !env.invocations().iter().any(|l| l.starts_with("tmux new-window")),
         "window must be deduped by container id: {:?}",
+        env.invocations()
+    );
+}
+
+#[test]
+fn open_with_config_restarts_stopped_container() {
+    // Arrange: コンテナは stopped (exited) → started
+    let env = TestEnv::new();
+    env.write_home("ghq/github.com/owner/repo/.devcontainer/devcontainer.json", "{}")
+        .stub("^tmux new-session -d -s owner\\.repo -c ", "")
+        .stub("^docker ps -a", "exited\n")
+        .stub("^devcontainer up --workspace-folder ", "")
+        .stub("^docker ps -q ", "abc123\n")
+        .stub("^docker inspect --format ", "[{\"remoteUser\":\"dev\"}]\n")
+        .stub("^tmux new-window -d -P -F ", "%5\n");
+    let cfg = format!("{}/ghq/github.com/owner/repo/.devcontainer/devcontainer.json", env.home_str());
+
+    // Act
+    let out = env.run(&["open", "--repo", "owner/repo", "--issue", "main", "--config", &cfg]);
+
+    // Assert
+    assert_eq!(out.status, Some(0));
+    assert_eq!(
+        out.stdout_json()["message"],
+        "Opened owner/repo (main) [tmux] + devcontainer(s) [started: repo]"
+    );
+}
+
+#[test]
+fn open_with_multiple_configs_starts_each_container() {
+    // Arrange: repo と repo-alt の 2 設定を同時に立てる
+    let env = TestEnv::new();
+    let home = env.home_str();
+    env.write_home("ghq/github.com/owner/repo/.devcontainer/devcontainer.json", "{}")
+        .write_home("ghq/github.com/owner/repo/.devcontainer/alt/devcontainer.json", "{}")
+        .stub("^tmux new-session -d -s owner\\.repo -c ", "")
+        .stub("^docker ps -a", "")
+        .stub("^devcontainer up --workspace-folder ", "")
+        .stub("wsm\\.config=repo$", "cid-repo\n")
+        .stub("wsm\\.config=repo-alt$", "cid-alt\n")
+        .stub("^docker inspect --format ", "[{\"remoteUser\":\"dev\"}]\n")
+        .stub("^tmux new-window -d -P -F ", "%5\n");
+    let ws = format!("{home}/ghq/github.com/owner/repo");
+    let cfg_repo = format!("{ws}/.devcontainer/devcontainer.json");
+    let cfg_alt = format!("{ws}/.devcontainer/alt/devcontainer.json");
+
+    // Act
+    let out = env.run(&[
+        "open", "--repo", "owner/repo", "--issue", "main", "--config", &cfg_repo, "--config", &cfg_alt,
+    ]);
+
+    // Assert: 設定ごとにラベル付きで up され、結果が join される
+    assert_eq!(out.status, Some(0));
+    assert_eq!(
+        out.stdout_json()["message"],
+        "Opened owner/repo (main) [tmux] + devcontainer(s) [created: repo, created: repo-alt]"
+    );
+    let invocations = env.invocations();
+    assert!(
+        invocations.iter().any(|l| {
+            l.starts_with("devcontainer up") && l.contains("--config ") && l.ends_with("--id-label wsm.config=repo")
+        }),
+        "repo config must be brought up with its label: {invocations:?}"
+    );
+    assert!(
+        invocations.iter().any(|l| l.starts_with("devcontainer up") && l.ends_with("--id-label wsm.config=repo-alt")),
+        "repo-alt config must be brought up with its label: {invocations:?}"
+    );
+    assert!(
+        invocations.iter().any(|l| l.starts_with("tmux new-window") && l.contains("'cid-repo'")),
+        "🐳 window for the repo container: {invocations:?}"
+    );
+    assert!(
+        invocations.iter().any(|l| l.starts_with("tmux new-window") && l.contains("'cid-alt'")),
+        "🐳 window for the alt container: {invocations:?}"
+    );
+}
+
+#[test]
+fn devcontainer_window_without_remote_user_omits_user_flag() {
+    // Arrange: devcontainer.metadata に remoteUser がない
+    let env = TestEnv::new();
+    env.write_home("ghq/github.com/owner/repo/.devcontainer/devcontainer.json", "{}")
+        .stub("^tmux new-session -d -s owner\\.repo -c ", "")
+        .stub("^docker ps -a", "")
+        .stub("^devcontainer up --workspace-folder ", "")
+        .stub("^docker ps -q ", "abc123\n")
+        .stub("^docker inspect --format ", "[]\n")
+        .stub("^tmux new-window -d -P -F ", "%5\n");
+    let cfg = format!("{}/ghq/github.com/owner/repo/.devcontainer/devcontainer.json", env.home_str());
+
+    // Act
+    let out = env.run(&["open", "--repo", "owner/repo", "--issue", "main", "--config", &cfg]);
+
+    // Assert: --user なしの正規形 (単一スペース) で exec する
+    assert_eq!(out.status, Some(0));
+    assert!(
+        env.invocations().contains(&format!(
+            "tmux new-window -d -P -F #{{pane_id}} -t owner.repo: -n 🐳 docker exec -it -w '/workspaces/ghq/github.com/owner/repo' 'abc123' zsh"
+        )),
+        "window command must omit --user cleanly: {:?}",
         env.invocations()
     );
 }
