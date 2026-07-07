@@ -255,11 +255,11 @@ _remove_workspace_sessions() {
     _herdr_stop_and_delete "$herdr_session"
   else
     local ws_json=$(_herdr_workspace_list "$herdr_session")
-    local wid=$(echo "$ws_json" | jq -r --arg label "$id" '.result.workspaces[] | select(.label == $label) | .workspace_id' 2>/dev/null | head -1)
+    local wid=$(printf '%s\n' "$ws_json" | jq -r --arg label "$id" '.result.workspaces[] | select(.label == $label) | .workspace_id' 2>/dev/null | head -1)
     [[ -n "$wid" ]] || return 0
     local sock=$(_herdr_socket_path "$herdr_session")
     HERDR_SOCKET_PATH=$sock herdr workspace close "$wid" >/dev/null 2>&1 || true
-    local count=$(echo "$ws_json" | jq -r '.result.workspaces | length' 2>/dev/null)
+    local count=$(printf '%s\n' "$ws_json" | jq -r '.result.workspaces | length' 2>/dev/null)
     if [[ "${count:-0}" -le 1 ]]; then
       _herdr_stop_and_delete "$herdr_session"
     fi
@@ -544,7 +544,8 @@ cmd_list_projects() {
   if [[ -z "$projects" ]]; then
     echo '[]'
   else
-    echo "$projects" | jq -s '.'
+    # printf を使う: zsh の echo は JSON 内の \\ を解釈して壊す
+    printf '%s\n' "$projects" | jq -s '.'
   fi
 }
 
@@ -682,7 +683,7 @@ cmd_list_issues() {
       fi
       local dc=$(_devcontainer_state "$ns_repo" "$num")
       # Escape title for JSON
-      local escaped_title=$(echo "$title" | jq -Rs '.[:-1]')
+      local escaped_title=$(printf '%s\n' "$title" | jq -Rs '.[:-1]')
       items+=("{\"id\":\"$num\",\"title\":$escaped_title,\"active\":$is_active,\"closed\":false,\"devcontainer\":\"$dc\"}")
     done <<< "$issues"
   fi
@@ -692,7 +693,7 @@ cmd_list_issues() {
     while IFS= read -r orphan_id; do
       [[ -n "${active_ids[$orphan_id]:-}" ]] || continue
       local orphan_title=$(gh issue view "$orphan_id" --repo "$ns_repo" --json title -q '.title' 2>/dev/null) || true
-      local escaped_title=$(echo "${orphan_title:-unknown}" | jq -Rs '.[:-1]')
+      local escaped_title=$(printf '%s\n' "${orphan_title:-unknown}" | jq -Rs '.[:-1]')
       local dc=$(_devcontainer_state "$ns_repo" "$orphan_id")
       items+=("{\"id\":\"$orphan_id\",\"title\":$escaped_title,\"active\":true,\"closed\":true,\"devcontainer\":\"$dc\"}")
     done <<< "$wt_ids"
@@ -728,7 +729,7 @@ cmd_list_workspaces() {
         [[ "$state" == "CLOSED" ]] && is_closed=true
       fi
 
-      local escaped_title=$(echo "${issue_title:-unknown}" | jq -Rs '.[:-1]')
+      local escaped_title=$(printf '%s\n' "${issue_title:-unknown}" | jq -Rs '.[:-1]')
       local dc=$(_devcontainer_state "$ns_repo" "$wt_id")
       items+=("{\"ns_repo\":\"$ns_repo\",\"id\":\"$wt_id\",\"title\":$escaped_title,\"active\":$is_active,\"closed\":$is_closed,\"devcontainer\":\"$dc\"}")
     done <<< "$wt_ids"

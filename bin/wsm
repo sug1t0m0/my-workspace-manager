@@ -139,7 +139,7 @@ _pick_session_manager() {
     "herdr"$'\t'"herdr" \
     | fzf --with-nth=2.. --delimiter=$'\t' --height=40% --reverse --prompt="Session manager> ")
 
-  [[ -n "$selected" ]] && echo "$selected" | cut -f1
+  [[ -n "$selected" ]] && printf '%s\n' "$selected" | cut -f1
 }
 
 # Format devcontainer state into a display indicator.
@@ -158,7 +158,7 @@ _pick_project() {
   local json=$(_core list-projects)
   local items=()
 
-  local projects=$(echo "$json" | jq -r '.[] | "\(.number)\t\(.title)"')
+  local projects=$(printf '%s\n' "$json" | jq -r '.[] | "\(.number)\t\(.title)"')
   if [[ -n "$projects" ]]; then
     while IFS=$'\t' read -r num title; do
       items+=("${num}${TAB}${title}")
@@ -170,7 +170,7 @@ _pick_project() {
   local selected=$(printf '%s\n' "${items[@]}" \
     | fzf --with-nth=2.. --delimiter=$'\t' --height=40% --reverse --prompt="Project> ")
   if [[ -n "$selected" ]]; then
-    echo "$selected" | cut -f1
+    printf '%s\n' "$selected" | cut -f1
   fi
 }
 
@@ -180,7 +180,7 @@ _pick_repo() {
   local TAB=$'\t'
 
   local json=$(_core list-repos --project "$project_num")
-  local count=$(echo "$json" | jq 'length')
+  local count=$(printf '%s\n' "$json" | jq 'length')
 
   if [[ "$count" -eq 0 ]]; then
     echo "No repositories found" >&2
@@ -194,12 +194,12 @@ _pick_repo() {
       display+="  (${active_count} workspaces)"
     fi
     items+=("${repo}${TAB}${display}")
-  done < <(echo "$json" | jq -r '.[] | "\(.ns_repo)\t\(.active_count)"')
+  done < <(printf '%s\n' "$json" | jq -r '.[] | "\(.ns_repo)\t\(.active_count)"')
 
   local selected=$(printf '%s\n' "${items[@]}" \
     | fzf --with-nth=2.. --delimiter=$'\t' --height=40% --reverse --prompt="Repository> ")
   if [[ -n "$selected" ]]; then
-    echo "$selected" | cut -f1
+    printf '%s\n' "$selected" | cut -f1
   fi
 }
 
@@ -227,12 +227,12 @@ _pick_issue() {
     local dc_disp=$(_dc_indicator "$dc")
     [[ -n "$dc_disp" ]] && display+="  ${dc_disp}"
     items+=("${id}${TAB}${display}")
-  done < <(echo "$json" | jq -r '.[] | "\(.id)\t\(.title)\t\(.active)\t\(.closed)\t\(.devcontainer // "none")"')
+  done < <(printf '%s\n' "$json" | jq -r '.[] | "\(.id)\t\(.title)\t\(.active)\t\(.closed)\t\(.devcontainer // "none")"')
 
   local selected=$(printf '%s\n' "${items[@]}" \
     | fzf --with-nth=2.. --delimiter=$'\t' --height=40% --reverse --prompt="Issue> " --header="${ns_repo}")
   if [[ -n "$selected" ]]; then
-    echo "$selected" | cut -f1
+    printf '%s\n' "$selected" | cut -f1
   fi
 }
 
@@ -243,7 +243,7 @@ _pick_devcontainer() {
   local TAB=$'\t'
 
   local json=$(_core list-devcontainer-configs --repo "$ns_repo" --issue "$id")
-  local count=$(echo "$json" | jq 'length')
+  local count=$(printf '%s\n' "$json" | jq 'length')
 
   if [[ "$count" -eq 0 ]]; then
     echo "No devcontainer configs available" >&2
@@ -255,7 +255,7 @@ _pick_devcontainer() {
   local cfg_path cfg_name cfg_source
   while IFS=$'\t' read -r cfg_path cfg_name cfg_source; do
     items+=("${cfg_path}${TAB}${cfg_name}${TAB}[${cfg_source}] ${cfg_name}  ${cfg_path}")
-  done < <(echo "$json" | jq -r '.[] | "\(.path)\t\(.name)\t\(.source)"')
+  done < <(printf '%s\n' "$json" | jq -r '.[] | "\(.path)\t\(.name)\t\(.source)"')
 
   local selected=$(printf '%s\n' "${items[@]}" \
     | fzf --multi --with-nth=3.. --delimiter=$'\t' --height=40% --reverse \
@@ -263,18 +263,18 @@ _pick_devcontainer() {
   [[ -z "$selected" ]] && return 0
 
   # If "(none)" is among the picks, ignore everything else.
-  if echo "$selected" | grep -q '^(none)\t'; then
+  if printf '%s\n' "$selected" | grep -q '^(none)\t'; then
     return 0
   fi
 
-  echo "$selected" | cut -f1
+  printf '%s\n' "$selected" | cut -f1
 }
 
 # wsm rm 用: 全リポジトリの既存ワークスペースから選択
 _pick_rm() {
   local TAB=$'\t'
   local json=$(_core list-workspaces)
-  local count=$(echo "$json" | jq 'length')
+  local count=$(printf '%s\n' "$json" | jq 'length')
 
   if [[ "$count" -eq 0 ]]; then
     echo "No active workspaces to remove" >&2
@@ -298,20 +298,20 @@ _pick_rm() {
     local dc_disp=$(_dc_indicator "$dc")
     [[ -n "$dc_disp" ]] && display+="  ${dc_disp}"
     items+=("${repo}${TAB}${id}${TAB}${display}")
-  done < <(echo "$json" | jq -r '.[] | "\(.ns_repo)\t\(.id)\t\(.title)\t\(.active)\t\(.closed)\t\(.devcontainer // "none")"')
+  done < <(printf '%s\n' "$json" | jq -r '.[] | "\(.ns_repo)\t\(.id)\t\(.title)\t\(.active)\t\(.closed)\t\(.devcontainer // "none")"')
 
   local selected=$(printf '%s\n' "${items[@]}" \
     | fzf --with-nth=3.. --delimiter=$'\t' --height=40% --reverse --prompt="wsm rm> ")
   if [[ -n "$selected" ]]; then
     # ns_repo\ttarget_id を返す
-    echo "$selected" | cut -f1,2
+    printf '%s\n' "$selected" | cut -f1,2
   fi
 }
 
 # wsm ls: 全リポジトリの既存ワークスペースを一覧表示
 _do_ls() {
   local json=$(_core list-workspaces)
-  local count=$(echo "$json" | jq 'length')
+  local count=$(printf '%s\n' "$json" | jq 'length')
 
   if [[ "$count" -eq 0 ]]; then
     echo "No active workspaces"
@@ -320,7 +320,7 @@ _do_ls() {
 
   # Group by ns_repo and display
   local prev_repo=""
-  echo "$json" | jq -r '.[] | "\(.ns_repo)\t\(.id)\t\(.title)\t\(.active)\t\(.closed)\t\(.devcontainer // "none")"' | \
+  printf '%s\n' "$json" | jq -r '.[] | "\(.ns_repo)\t\(.id)\t\(.title)\t\(.active)\t\(.closed)\t\(.devcontainer // "none")"' | \
   while IFS=$'\t' read -r repo id title active closed dc; do
     if [[ "$repo" != "$prev_repo" ]]; then
       [[ -n "$prev_repo" ]] && echo ""
@@ -343,7 +343,7 @@ _do_ls() {
     fi
     local dc_disp=$(_dc_indicator "$dc")
     [[ -n "$dc_disp" ]] && line+="  ${dc_disp}"
-    echo "$line"
+    printf '%s\n' "$line"
   done
 
   echo ""
@@ -409,11 +409,11 @@ case "$cmd" in
     fi
 
     result=$(_core open --repo "$ns_repo" --issue "$issue_id" "${open_args[@]}")
-    echo "$result" | jq -r '.message // .error'
-    [[ $(echo "$result" | jq -r '.status // empty') == "ok" ]] || exit 1
+    printf '%s\n' "$result" | jq -r '.message // .error'
+    [[ $(printf '%s\n' "$result" | jq -r '.status // empty') == "ok" ]] || exit 1
 
     if _terminal_available; then
-      attach_command=$(echo "$result" | jq -r '.attach_command // empty')
+      attach_command=$(printf '%s\n' "$result" | jq -r '.attach_command // empty')
       [[ -n "$attach_command" ]] && _open_terminal_tab "$attach_command"
     fi
     ;;
@@ -442,7 +442,7 @@ case "$cmd" in
     fi
 
     result=$(_core remove --repo "$ns_repo" --issue "$target_id")
-    echo "$result" | jq -r '.message // .error'
+    printf '%s\n' "$result" | jq -r '.message // .error'
     ;;
 
   "ls")

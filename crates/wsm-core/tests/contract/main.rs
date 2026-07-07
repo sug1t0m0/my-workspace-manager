@@ -217,6 +217,23 @@ fn dotted_repo_names_stay_valid() {
     assert_eq!(out.stdout_json()[0]["id"], "main");
 }
 
+#[test]
+fn list_projects_preserves_backslashes_in_titles() {
+    // Arrange: タイトルにバックスラッシュを含む Project (zsh の echo は \\ を解釈して JSON を壊す)
+    let env = TestEnv::new();
+    env.stub("^gh api user -q .login", "me\n").stub(
+        "^gh project list --owner me --format json",
+        "{\"number\":1,\"title\":\"Group \\\\ A\"}\n",
+    );
+
+    // Act
+    let out = env.run(&["list-projects"]);
+
+    // Assert
+    assert_eq!(out.status, Some(0));
+    assert_eq!(out.stdout_json(), json!([{ "number": 1, "title": "Group \\ A" }]));
+}
+
 // --- list-repos ---
 
 #[test]
@@ -422,6 +439,25 @@ fn list_issues_aggregates_devcontainer_states() {
             { "id": "42", "title": "Fix bug", "active": false, "closed": false, "devcontainer": "stopped" },
             { "id": "43", "title": "Add feature", "active": false, "closed": false, "devcontainer": "running" },
         ])
+    );
+}
+
+#[test]
+fn list_issues_preserves_backslash_sequences_in_titles() {
+    // Arrange: タイトルに literal な \t (バックスラッシュ + t) を含む Issue。
+    // zsh の echo は \t をタブに解釈してタイトルを壊す
+    let env = TestEnv::new();
+    env.stub("^docker ps -a", "")
+        .stub("^gh issue list --repo owner/repo", "42\tKeep \\t literal\n");
+
+    // Act
+    let out = env.run(&["list-issues", "--repo", "owner/repo"]);
+
+    // Assert
+    assert_eq!(out.status, Some(0));
+    assert_eq!(
+        out.stdout_json()[1],
+        json!({ "id": "42", "title": "Keep \\t literal", "active": false, "closed": false, "devcontainer": "none" })
     );
 }
 
