@@ -462,10 +462,30 @@ remove は逆順で破棄する(Terminal は管理外なので対象外):
   - `project`: 数字のみ(`none` は list-repos の特別値)
   - `--config`: 検証しない(ローカルパスを許容する)
   - 空文字の値は未指定と同じ扱い(`--repo ""` は `--repo required`)
+  - 同名フラグの重複は後勝ち
   - 違反時は `{"error":"--<flag> required"}` または
     `{"error":"Invalid <name>: <value>"}` を stderr に出して非ゼロ終了
+- 既知の制約
+  - open な Issue の取得は 50 件まで(`gh issue list --limit 50`)
+  - タブを含む Issue タイトルは非対応(gh の `-q` 出力をタブ区切りで
+    パースするため、タブ以降が欠落する)
 
 ## 決定事項
+
+### エラーは必ずちょうど 1 つの error JSON で返す
+
+失敗時の契約は「stderr にちょうど 1 つの `{"error": ...}` を出して
+非ゼロ終了する」。Rust 版はこれを満たす。現行 zsh 版には満たせない
+既知の欠陥があるが、書き換えで解消されるため修正しない:
+
+- 外部コマンド自体の起動失敗(gh 未ログイン、docker daemon 停止、
+  `ghq list` の結果が空など)のとき、`set -e` / `pipefail` により
+  **JSON を出さず無言で exit 1** することがある
+- devcontainer の設定不在・CLI 未インストール時に error JSON を
+  **2 行** stderr に出す(内側のエラーと外側の `devcontainer up failed`)
+
+契約テストは「両実装が通る」範囲を対象とするため、この差は docs で
+管理する(zsh 版に合わせたテストは書かない)。
 
 ### JSON API を書き換えの境界とする
 

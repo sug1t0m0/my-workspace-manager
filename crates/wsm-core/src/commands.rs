@@ -257,10 +257,11 @@ fn issue_entry(id: &str, title: &str, active: bool, closed: bool, dc: &str) -> V
     json!({ "id": id, "title": title, "active": active, "closed": closed, "devcontainer": dc })
 }
 
-/// フラグの値を返す。空文字の値は未指定と同じ扱い (zsh 版の [[ -z ]] と同じ契約)。
+/// フラグの値を返す。同名フラグの重複は後勝ち (zsh 版のループ上書きと同じ契約)。
+/// 空文字の値は未指定と同じ扱い (zsh 版の [[ -z ]] と同じ契約)。
 fn flag_value(args: &[String], flag: &str) -> Option<String> {
     args.iter()
-        .position(|a| a == flag)
+        .rposition(|a| a == flag)
         .and_then(|i| args.get(i + 1))
         .filter(|v| !v.is_empty())
         .cloned()

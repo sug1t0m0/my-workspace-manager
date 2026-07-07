@@ -188,6 +188,22 @@ fn parameter_shapes_are_validated() {
 }
 
 #[test]
+fn repeated_flags_use_the_last_value() {
+    // Arrange
+    let env = TestEnv::new();
+    env.stub("^docker ps -a", "").stub("^gh issue list --repo owner/repo", "");
+
+    // Act
+    let out = env.run(&["list-issues", "--repo", "aaa/xxx", "--repo", "owner/repo"]);
+
+    // Assert: 同名フラグの重複は後勝ち (zsh のループ上書きと同じ)
+    assert_eq!(out.status, Some(0));
+    let invocations = env.invocations();
+    assert!(invocations.iter().any(|l| l.contains("--repo owner/repo")), "{invocations:?}");
+    assert!(!invocations.iter().any(|l| l.contains("aaa/xxx")), "{invocations:?}");
+}
+
+#[test]
 fn dotted_repo_names_stay_valid() {
     // Arrange: .github のような先頭ドットのリポジトリ名は正当 (締めすぎ防止)
     let env = TestEnv::new();
