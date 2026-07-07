@@ -101,20 +101,15 @@ _session_manager() {
   echo "$_session_manager_cache"
 }
 
-_session_name() {
-  local ns_repo=$1 id=$2
-  local repo_key=${ns_repo//\//.}
-
-  if [[ "$id" == "main" ]]; then
-    echo "$repo_key"
-  else
-    echo "${repo_key}-${id}"
-  fi
+# herdr のセッション名 <ns>.<repo>。GitHub の namespace にドットが使えない
+# ため、最初のドットが常に区切りとなり単射になる。
+_herdr_session_name() {
+  echo "${1//\//.}"
 }
 
 # tmux はセッション名の . と : をターゲット構文予約のため黙って _ に置換する。
-# tmux 実装では区切りをすべて _ に統一した名前を使う (herdr は canonical の
-# ドット形式)。<ns>_<repo> / <ns>_<repo>_<id>
+# tmux 実装では区切りをすべて _ に統一した名前を使う。
+# <ns>_<repo> / <ns>_<repo>_<id>
 _tmux_session_name() {
   local ns_repo=$1 id=$2
   local key=${ns_repo//\//_}
@@ -197,7 +192,7 @@ _workspace_session_exists() {
   local ns_repo=$1 id=$2
   _tmux_session_exists "$(_tmux_session_name "$ns_repo" "$id")" && return 0
 
-  local herdr_session=$(_session_name "$ns_repo" main)
+  local herdr_session=$(_herdr_session_name "$ns_repo")
   _herdr_session_running "$herdr_session" || return 1
   [[ "$id" == "main" ]] && return 0
   [[ -n "$(_herdr_workspace_id "$herdr_session" "$id")" ]]
@@ -222,7 +217,7 @@ _ensure_workspace_session() {
         echo '{"error":"herdr not installed"}' >&2
         exit 1
       }
-      local session=$(_session_name "$ns_repo" main)
+      local session=$(_herdr_session_name "$ns_repo")
       _herdr_ensure_running "$session"
       local sock=$(_herdr_socket_path "$session")
 
@@ -265,7 +260,7 @@ _remove_workspace_sessions() {
   local ns_repo=$1 id=$2
   tmux kill-session -t "=$(_tmux_session_name "$ns_repo" "$id")" 2>/dev/null || true
 
-  local herdr_session=$(_session_name "$ns_repo" main)
+  local herdr_session=$(_herdr_session_name "$ns_repo")
   _herdr_session_running "$herdr_session" || return 0
 
   if [[ "$id" == "main" ]]; then
@@ -526,7 +521,6 @@ _repo_active_ids() {
     elif [[ "$line" == "branch refs/heads/feature/"* && -n "$current_path" ]]; then
       local issue_id=${line#branch refs/heads/feature/}
       local expected_path="${worktree_base}/${issue_id}"
-      local session_name=$(_session_name "$ns_repo" "$issue_id")
 
       if [[ "$current_path" == "$expected_path" ]] \
         && [[ -d "$expected_path" ]] \
@@ -848,7 +842,8 @@ cmd_open() {
     fi
 
     session_name=$(_ensure_workspace_session "$ns_repo" "$issue_id" "$worktree_path")
-    message="Opened ${ns_repo} #${issue_id} [$(_session_manager)]"
+    # トラッカー固有の記法 (# 等) は使わない: <ns_repo> <id> のスペース区切り
+    message="Opened ${ns_repo} ${issue_id} [$(_session_manager)]"
   fi
 
   if [[ ${#configs[@]} -gt 0 ]]; then
@@ -902,7 +897,7 @@ cmd_remove() {
 
   if [[ "$issue_id" == "main" ]]; then
     # herdr のセッションは Issue workspace の器なので、残存中は main を消せない
-    local herdr_session=$(_session_name "$ns_repo" main)
+    local herdr_session=$(_herdr_session_name "$ns_repo")
     if _herdr_session_running "$herdr_session" && _herdr_has_issue_workspaces "$herdr_session"; then
       echo "{\"error\":\"herdr session has open issue workspaces: $herdr_session\"}" >&2
       exit 1
@@ -911,14 +906,13 @@ cmd_remove() {
     _devcontainer_down "$ns_repo" main
     echo "{\"status\":\"ok\",\"message\":\"Removed session: $ns_repo\"}"
   else
-    local session_name=$(_session_name "$ns_repo" "$issue_id")
     local worktree_path="$HOME/worktrees/github.com/${ns_repo}/${issue_id}"
     local ghq_path=$(_ghq_path "$ns_repo")
 
     _remove_workspace_sessions "$ns_repo" "$issue_id"
     _devcontainer_down "$ns_repo" "$issue_id"
     git -C "$ghq_path" worktree remove "$worktree_path" 2>/dev/null || true
-    echo "{\"status\":\"ok\",\"message\":\"Removed worktree and session: $session_name\"}"
+    echo "{\"status\":\"ok\",\"message\":\"Removed worktree and session: ${ns_repo} ${issue_id}\"}"
   fi
 }
 

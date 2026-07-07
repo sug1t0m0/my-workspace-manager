@@ -169,10 +169,11 @@ pub fn open(home: &Path, args: &[String]) -> CmdResult {
         })
         .collect::<Result<Vec<String>, String>>()?;
 
+    // トラッカー固有の記法 (# 等) は使わない: <ns_repo> <id> のスペース区切り
     let ns_repo = repo.ns_repo();
     let base_message = match &id {
         WorkspaceId::Main => format!("Opened {ns_repo} (main) [{}]", manager.name()),
-        WorkspaceId::Issue(n) => format!("Opened {ns_repo} #{n} [{}]", manager.name()),
+        WorkspaceId::Issue(n) => format!("Opened {ns_repo} {n} [{}]", manager.name()),
     };
     let message = match outcomes.is_empty() {
         true => base_message,
@@ -191,13 +192,12 @@ pub fn remove(home: &Path, args: &[String]) -> CmdResult {
     let repo = required_repo(args)?;
     let issue = required(args, "--issue", "issue", domain::is_valid_issue)?;
     let id = WorkspaceId::parse(&issue);
-    let session = domain::session_name(&repo, &id);
 
     // herdr のセッションは Issue workspace の器なので、残存中は main を消せない
     if id == WorkspaceId::Main && session::herdr_blocks_main_removal(&repo) {
         return Err(format!(
             "herdr session has open issue workspaces: {}",
-            domain::session_name(&repo, &WorkspaceId::Main)
+            domain::herdr_session_name(&repo)
         ));
     }
 
@@ -210,14 +210,15 @@ pub fn remove(home: &Path, args: &[String]) -> CmdResult {
             "status": "ok",
             "message": format!("Removed session: {}", repo.ns_repo()),
         })),
-        WorkspaceId::Issue(_) => {
+        WorkspaceId::Issue(issue) => {
             worktree::remove(
                 &domain::ghq_path(home, &repo),
                 &domain::workspace_path(home, &repo, &id),
             );
+            // トラッカー固有の記法 (# 等) は使わない: <ns_repo> <id> のスペース区切り
             Ok(json!({
                 "status": "ok",
-                "message": format!("Removed worktree and session: {session}"),
+                "message": format!("Removed worktree and session: {} {issue}", repo.ns_repo()),
             }))
         }
     }

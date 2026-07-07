@@ -87,14 +87,10 @@ pub fn branch_name(issue: &str) -> String {
     format!("feature/{issue}")
 }
 
-/// canonical なセッション名 `<ns>.<repo>(-<id>)`。ns にドットが入らないため
-/// 単射 (herdr がこの形式を使う)。
-pub fn session_name(repo: &RepoRef, id: &WorkspaceId) -> String {
-    let repo_key = format!("{}.{}", repo.ns(), repo.repo());
-    match id {
-        WorkspaceId::Main => repo_key,
-        WorkspaceId::Issue(issue) => format!("{repo_key}-{issue}"),
-    }
+/// herdr のセッション名 `<ns>.<repo>`。GitHub の namespace にドットが使えない
+/// ため、最初のドットが常に区切りとなり単射になる。
+pub fn herdr_session_name(repo: &RepoRef) -> String {
+    format!("{}.{}", repo.ns(), repo.repo())
 }
 
 /// herdr の workspace ラベル。main はリポジトリ名 (アタッチ時に見える名前)、

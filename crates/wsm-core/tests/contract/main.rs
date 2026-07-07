@@ -628,7 +628,7 @@ fn open_issue_with_herdr_creates_workspace_in_repo_session() {
     assert_eq!(out.status, Some(0));
     let v = out.stdout_json();
     assert_eq!(v["session"], "owner.repo");
-    assert_eq!(v["message"], "Opened owner/repo #42 [herdr]");
+    assert_eq!(v["message"], "Opened owner/repo 42 [herdr]");
     let invocations = env.invocations();
     assert!(
         invocations.contains(&format!(
@@ -993,7 +993,7 @@ fn open_issue_with_config_mounts_worktree_and_common_dir() {
     // Assert
     assert_eq!(out.status, Some(0));
     let v = out.stdout_json();
-    assert_eq!(v["message"], "Opened owner/repo #42 [tmux] + devcontainer(s) [created: default]");
+    assert_eq!(v["message"], "Opened owner/repo 42 [tmux] + devcontainer(s) [created: default]");
     let invocations = env.invocations();
     assert!(
         invocations.contains(&format!(
@@ -1176,7 +1176,7 @@ fn remove_issue_tears_down_session_and_worktree() {
     assert_eq!(out.status, Some(0));
     assert_eq!(
         out.stdout_json(),
-        json!({ "status": "ok", "message": "Removed worktree and session: owner.repo-42" })
+        json!({ "status": "ok", "message": "Removed worktree and session: owner/repo 42" })
     );
     let invocations = env.invocations();
     assert!(invocations.contains(&"tmux kill-session -t =owner_repo_42".to_owned()));

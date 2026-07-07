@@ -1,7 +1,7 @@
 //! SessionManager ロールの tmux / herdr 実装。
 //!
 //! Workspace とセッションの対応は実装ごとに異なる:
-//! - tmux: Workspace ごとに 1 セッション (`<ns>.<repo>(-<id>)`)
+//! - tmux: Workspace ごとに 1 セッション (`<ns>_<repo>(_<id>)`)
 //! - herdr: リポジトリ単位のセッション (`<ns>.<repo>`) に、Issue ごとの
 //!   workspace (ラベル = Issue 番号) を追加する。セッション外からの workspace
 //!   操作は HERDR_SOCKET_PATH で対象セッションの socket を指定して行う
@@ -95,7 +95,7 @@ fn is_issue_label(label: &str) -> bool {
 /// herdr のセッションに wsm 管理の Issue workspace が残っているか。
 /// main の remove を拒否する判定に使う (合成はオーケストレーション層)。
 pub fn herdr_blocks_main_removal(repo: &RepoRef) -> bool {
-    let session = domain::session_name(repo, &WorkspaceId::Main);
+    let session = domain::herdr_session_name(repo);
     herdr_session_running(&session)
         && herdr_socket_path(&session).is_some_and(|sock| {
             herdr_workspaces(&sock).iter().any(|(_, label)| is_issue_label(label))
@@ -110,7 +110,7 @@ pub fn workspace_session_exists(repo: &RepoRef, id: &WorkspaceId) -> bool {
     if tmux_exists(&domain::tmux_session_name(repo, id)) {
         return true;
     }
-    let repo_session = domain::session_name(repo, &WorkspaceId::Main);
+    let repo_session = domain::herdr_session_name(repo);
     if !herdr_session_running(&repo_session) {
         return false;
     }
@@ -144,7 +144,7 @@ pub fn ensure(
         }
         SessionManager::Herdr => {
             exec::which("herdr").ok_or("herdr not installed")?;
-            let session = domain::session_name(repo, &WorkspaceId::Main);
+            let session = domain::herdr_session_name(repo);
             herdr_ensure_running(&session)?;
             let sock = herdr_socket_path(&session)
                 .ok_or_else(|| format!("failed to resolve herdr socket: {session}"))?;
@@ -204,7 +204,7 @@ pub fn remove_workspace_sessions(repo: &RepoRef, id: &WorkspaceId) {
         &["kill-session", "-t", &format!("={}", domain::tmux_session_name(repo, id))],
     );
 
-    let session = domain::session_name(repo, &WorkspaceId::Main);
+    let session = domain::herdr_session_name(repo);
     if !herdr_session_running(&session) {
         return;
     }
