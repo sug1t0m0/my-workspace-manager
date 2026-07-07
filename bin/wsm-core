@@ -4,6 +4,7 @@
 # or via SSH from DevContainer (wsm-client).
 
 set -euo pipefail
+zmodload zsh/zselect 2>/dev/null || true
 
 # --- Argument validation ---
 
@@ -87,88 +88,139 @@ _tmux_session_exists() {
   tmux has-session -t "=$session" 2>/dev/null
 }
 
-_herdr_session_exists() {
+# --- herdr (SessionManager 実装) ---
+# herdr はリポジトリ単位のセッション (<ns>.<repo>) に、Issue ごとの workspace
+# (ラベル = Issue 番号) を追加するモデル。tmux (Workspace ごとにセッション) とは
+# マッピングが異なる。セッション外からの workspace 操作は HERDR_SOCKET_PATH で
+# 対象セッションの socket を指定して行う。
+
+_herdr_session_running() {
   local session=$1
   command -v herdr >/dev/null 2>&1 || return 1
   herdr session list --json 2>/dev/null \
     | jq -e --arg name "$session" '.sessions[] | select(.name == $name and .running == true)' >/dev/null
 }
 
-_session_exists() {
+_herdr_socket_path() {
   local session=$1
-  case "$(_session_manager)" in
-    tmux) _tmux_session_exists "$session" ;;
-    herdr) _herdr_session_exists "$session" ;;
-  esac
+  herdr session list --json 2>/dev/null \
+    | jq -r --arg name "$session" '.sessions[] | select(.name == $name) | .socket_path' 2>/dev/null | head -1
 }
+
+# 対象セッションの workspace 一覧 (JSON)。取得できなければ空。
+_herdr_workspace_list() {
+  local session=$1
+  local sock=$(_herdr_socket_path "$session")
+  [[ -n "$sock" ]] || return 0
+  HERDR_SOCKET_PATH=$sock herdr workspace list 2>/dev/null || true
+}
+
+_herdr_workspace_id() {
+  local session=$1 label=$2
+  _herdr_workspace_list "$session" \
+    | jq -r --arg label "$label" '.result.workspaces[] | select(.label == $label) | .workspace_id' 2>/dev/null | head -1
+}
+
+# wsm 管理の Issue workspace (ラベルが数字のみ) が残っているか。
+_herdr_has_issue_workspaces() {
+  local session=$1
+  _herdr_workspace_list "$session" \
+    | jq -e '.result.workspaces[] | select(.label | test("^[0-9]+$"))' >/dev/null 2>&1
+}
+
+# セッションをヘッドレスで起動し、running になるまで待つ (冪等)。
+_herdr_ensure_running() {
+  local session=$1
+  _herdr_session_running "$session" && return 0
+  nohup herdr --session "$session" server >/dev/null 2>&1 &!
+  local i
+  for i in {1..50}; do
+    _herdr_session_running "$session" && return 0
+    zselect -t 10 2>/dev/null || true
+  done
+  echo "{\"error\":\"failed to start herdr session: $session\"}" >&2
+  exit 1
+}
+
+_herdr_stop_and_delete() {
+  local session=$1
+  herdr session stop "$session" --json >/dev/null 2>&1 || true
+  herdr session delete "$session" --json >/dev/null 2>&1 || true
+}
+
+# --- Workspace とセッションの対応 (マネージャー実装を横断) ---
 
 _workspace_session_exists() {
   local ns_repo=$1 id=$2
-  local session=$(_session_name "$ns_repo" "$id")
+  _tmux_session_exists "$(_session_name "$ns_repo" "$id")" && return 0
 
-  _tmux_session_exists "$session" || _herdr_session_exists "$session"
+  local herdr_session=$(_session_name "$ns_repo" main)
+  _herdr_session_running "$herdr_session" || return 1
+  [[ "$id" == "main" ]] && return 0
+  [[ -n "$(_herdr_workspace_id "$herdr_session" "$id")" ]]
 }
 
-_session_names() {
+# Workspace のセッションを冪等に用意し、アタッチ対象のセッション名を返す。
+# tmux: Workspace ごとのセッション。herdr: リポジトリセッションを (なければ
+# ヘッドレス起動して) 用意し、Issue なら workspace を作成/フォーカスする。
+_ensure_workspace_session() {
+  local ns_repo=$1 id=$2 cwd=$3
+
   case "$(_session_manager)" in
     tmux)
-      tmux list-sessions -F '#{session_name}' 2>/dev/null || true
-      ;;
-    herdr)
-      command -v herdr >/dev/null 2>&1 || return 0
-      herdr session list --json 2>/dev/null \
-        | jq -r '.sessions[] | select(.running == true) | .name' 2>/dev/null || true
-      ;;
-  esac
-}
-
-_remove_workspace_sessions() {
-  local ns_repo=$1 id=$2
-  local session=$(_session_name "$ns_repo" "$id")
-
-  tmux kill-session -t "=$session" 2>/dev/null || true
-
-  if command -v herdr >/dev/null 2>&1; then
-    herdr session delete "$session" --json >/dev/null 2>&1 || true
-  fi
-}
-
-_ensure_session() {
-  local session=$1 cwd=$2
-  case "$(_session_manager)" in
-    tmux)
+      local session=$(_session_name "$ns_repo" "$id")
       if ! _tmux_session_exists "$session"; then
         tmux new-session -d -s "$session" -c "$cwd"
       fi
+      echo "$session"
       ;;
     herdr)
       command -v herdr >/dev/null 2>&1 || {
-        echo "{\"error\":\"herdr not installed\"}" >&2
+        echo '{"error":"herdr not installed"}' >&2
         exit 1
       }
+      local session=$(_session_name "$ns_repo" main)
+      _herdr_ensure_running "$session"
+      if [[ "$id" != "main" ]]; then
+        local sock=$(_herdr_socket_path "$session")
+        local wid=$(_herdr_workspace_id "$session" "$id")
+        if [[ -n "$wid" ]]; then
+          HERDR_SOCKET_PATH=$sock herdr workspace focus "$wid" >/dev/null 2>&1 || true
+        else
+          HERDR_SOCKET_PATH=$sock herdr workspace create --cwd "$cwd" --label "$id" --focus >/dev/null 2>&1 || {
+            echo '{"error":"failed to create herdr workspace"}' >&2
+            exit 1
+          }
+        fi
+      fi
+      echo "$session"
       ;;
   esac
 }
 
-_ensure_workspace_session() {
-  local ns_repo=$1 id=$2 cwd=$3
-  local session=$(_session_name "$ns_repo" "$id")
+# セッション/workspace の冪等な破棄 (マネージャー実装を横断)。
+# herdr: Issue は workspace close (最後の 1 つならセッションも畳む)、
+# main はセッションの stop + delete (Issue 残存チェックは cmd_remove が先に行う)。
+_remove_workspace_sessions() {
+  local ns_repo=$1 id=$2
+  tmux kill-session -t "=$(_session_name "$ns_repo" "$id")" 2>/dev/null || true
 
-  _ensure_session "$session" "$cwd"
-  echo "$session"
-}
+  local herdr_session=$(_session_name "$ns_repo" main)
+  _herdr_session_running "$herdr_session" || return 0
 
-_remove_session() {
-  local session=$1
-  case "$(_session_manager)" in
-    tmux)
-      tmux kill-session -t "=$session" 2>/dev/null || true
-      ;;
-    herdr)
-      command -v herdr >/dev/null 2>&1 || return 0
-      herdr session delete "$session" --json >/dev/null 2>&1 || true
-      ;;
-  esac
+  if [[ "$id" == "main" ]]; then
+    _herdr_stop_and_delete "$herdr_session"
+  else
+    local ws_json=$(_herdr_workspace_list "$herdr_session")
+    local wid=$(echo "$ws_json" | jq -r --arg label "$id" '.result.workspaces[] | select(.label == $label) | .workspace_id' 2>/dev/null | head -1)
+    [[ -n "$wid" ]] || return 0
+    local sock=$(_herdr_socket_path "$herdr_session")
+    HERDR_SOCKET_PATH=$sock herdr workspace close "$wid" >/dev/null 2>&1 || true
+    local count=$(echo "$ws_json" | jq -r '.result.workspaces | length' 2>/dev/null)
+    if [[ "${count:-0}" -le 1 ]]; then
+      _herdr_stop_and_delete "$herdr_session"
+    fi
+  fi
 }
 
 # UI が Terminal にそのまま渡すアタッチ用コマンド。セッションマネージャー
@@ -755,7 +807,8 @@ cmd_open() {
   escaped_session=$(printf '%s' "$session_name" | jq -Rs '.')
   escaped_path=$(printf '%s' "$ws_path" | jq -Rs '.')
   escaped_attach=$(printf '%s' "$(_attach_command "$session_name" "$ws_path")" | jq -Rs '.')
-  echo "{\"status\":\"ok\",\"message\":\"${message}\",\"session\":${escaped_session},\"path\":${escaped_path},\"attach_command\":${escaped_attach}}"
+  # zsh の echo はバックスラッシュを解釈するため printf を使う (attach_command が %q を含む)
+  printf '%s\n' "{\"status\":\"ok\",\"message\":\"${message}\",\"session\":${escaped_session},\"path\":${escaped_path},\"attach_command\":${escaped_attach}}"
 }
 
 cmd_remove() {
@@ -773,6 +826,12 @@ cmd_remove() {
   _validate_arg "target" "$target"
 
   if [[ "$target" == "main" ]]; then
+    # herdr のセッションは Issue workspace の器なので、残存中は main を消せない
+    local herdr_session=$(_session_name "$ns_repo" main)
+    if _herdr_session_running "$herdr_session" && _herdr_has_issue_workspaces "$herdr_session"; then
+      echo "{\"error\":\"herdr session has open issue workspaces: $herdr_session\"}" >&2
+      exit 1
+    fi
     _remove_workspace_sessions "$ns_repo" main
     _devcontainer_down "$ns_repo" main
     echo "{\"status\":\"ok\",\"message\":\"Removed session: $ns_repo\"}"

@@ -387,6 +387,322 @@ fn open_issue_creates_worktree_branch_and_session() {
     );
 }
 
+// --- herdr (SessionManager 実装) ---
+// herdr はリポジトリ単位のセッション (<ns>.<repo>) に Issue ごとの workspace
+// (ラベル = Issue 番号) を追加するモデル。
+
+/// herdr session list --json のフィクスチャ (owner/repo のセッション)。
+fn herdr_sessions_json(home: &str, running: bool) -> String {
+    format!(
+        "{{\"sessions\":[{{\"default\":false,\"name\":\"owner.repo\",\"running\":{running},\"session_dir\":\"{home}/.config/herdr/sessions/owner.repo\",\"socket_path\":\"{}\"}}]}}\n",
+        herdr_sock(home)
+    )
+}
+
+fn herdr_sock(home: &str) -> String {
+    format!("{home}/.config/herdr/sessions/owner.repo/herdr.sock")
+}
+
+/// herdr workspace list のフィクスチャ。(workspace_id, label) の列。
+fn herdr_workspaces_json(entries: &[(&str, &str)]) -> String {
+    let workspaces: Vec<String> = entries
+        .iter()
+        .map(|(id, label)| format!("{{\"workspace_id\":\"{id}\",\"label\":\"{label}\",\"focused\":false}}"))
+        .collect();
+    format!(
+        "{{\"id\":\"cli:workspace:list\",\"result\":{{\"type\":\"workspace_list\",\"workspaces\":[{}]}}}}\n",
+        workspaces.join(",")
+    )
+}
+
+/// zsh の printf %q 相当 (attach_command の herdr 形式の期待値組み立て用)。
+fn zsh_quoted(s: &str) -> String {
+    s.chars()
+        .flat_map(|c| {
+            let escaped = !(c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '/' | '-'));
+            escaped.then_some('\\').into_iter().chain(std::iter::once(c))
+        })
+        .collect()
+}
+
+const HERDR_CONFIG: &str = "session_manager = \"herdr\"\n";
+
+#[test]
+fn open_issue_with_herdr_creates_workspace_in_repo_session() {
+    // Arrange: リポジトリセッションは起動済み、Issue 42 の workspace はまだない
+    let env = TestEnv::new();
+    let home = env.home_str();
+    let sock = herdr_sock(&home);
+    env.write_home(".config/wsm/config.toml", HERDR_CONFIG)
+        .stub("^herdr session list --json$", &herdr_sessions_json(&home, true))
+        .stub(
+            &format!("^HERDR_SOCKET_PATH={sock} herdr workspace list$"),
+            &herdr_workspaces_json(&[("w1", "my-workspace-manager")]),
+        )
+        .stub(&format!("^HERDR_SOCKET_PATH={sock} herdr workspace create "), "")
+        .stub("worktree add --relative-paths -b feature/42 ", "");
+
+    // Act
+    let out = env.run(&["open", "--repo", "owner/repo", "--issue", "42"]);
+
+    // Assert: セッションはリポジトリ単位、workspace がラベル 42 で作られる
+    assert_eq!(out.status, Some(0));
+    let v = out.stdout_json();
+    assert_eq!(v["session"], "owner.repo");
+    assert_eq!(v["message"], "Opened owner/repo #42 [herdr]");
+    let invocations = env.invocations();
+    assert!(
+        invocations.contains(&format!(
+            "HERDR_SOCKET_PATH={sock} herdr workspace create --cwd {home}/worktrees/github.com/owner/repo/42 --label 42 --focus"
+        )),
+        "issue workspace must be created in the repo session: {invocations:?}"
+    );
+    assert!(
+        !invocations.iter().any(|l| l.starts_with("tmux new-session")),
+        "herdr must not create tmux sessions: {invocations:?}"
+    );
+}
+
+#[test]
+fn open_issue_with_herdr_focuses_existing_workspace() {
+    // Arrange: Issue 42 の workspace が既にある
+    let env = TestEnv::new();
+    let home = env.home_str();
+    let sock = herdr_sock(&home);
+    env.write_home(".config/wsm/config.toml", HERDR_CONFIG)
+        .write_home("worktrees/github.com/owner/repo/42/.gitkeep", "")
+        .stub("^herdr session list --json$", &herdr_sessions_json(&home, true))
+        .stub(
+            &format!("^HERDR_SOCKET_PATH={sock} herdr workspace list$"),
+            &herdr_workspaces_json(&[("w1", "my-workspace-manager"), ("w7", "42")]),
+        )
+        .stub(&format!("^HERDR_SOCKET_PATH={sock} herdr workspace focus "), "");
+
+    // Act
+    let out = env.run(&["open", "--repo", "owner/repo", "--issue", "42"]);
+
+    // Assert: 再作成せず、既存 workspace にフォーカスする
+    assert_eq!(out.status, Some(0));
+    let invocations = env.invocations();
+    assert!(
+        invocations.contains(&format!("HERDR_SOCKET_PATH={sock} herdr workspace focus w7")),
+        "existing workspace must be focused: {invocations:?}"
+    );
+    assert!(
+        !invocations.iter().any(|l| l.contains("workspace create")),
+        "must not create a duplicate workspace: {invocations:?}"
+    );
+}
+
+#[test]
+fn open_issue_with_herdr_starts_session_headlessly_when_not_running() {
+    // Arrange: セッション未起動 → 1 回目の照会は not running、以降 running
+    let env = TestEnv::new();
+    let home = env.home_str();
+    let sock = herdr_sock(&home);
+    env.write_home(".config/wsm/config.toml", HERDR_CONFIG)
+        .stub_once("^herdr session list --json$", &herdr_sessions_json(&home, false))
+        .stub("^herdr session list --json$", &herdr_sessions_json(&home, true))
+        .stub(&format!("^HERDR_SOCKET_PATH={sock} herdr workspace list$"), &herdr_workspaces_json(&[]))
+        .stub(&format!("^HERDR_SOCKET_PATH={sock} herdr workspace create "), "")
+        .stub("worktree add --relative-paths -b feature/42 ", "");
+
+    // Act
+    let out = env.run(&["open", "--repo", "owner/repo", "--issue", "42"]);
+
+    // Assert: ヘッドレス起動してから workspace を作る
+    assert_eq!(out.status, Some(0));
+    let invocations = env.invocations();
+    assert!(
+        invocations.contains(&"herdr --session owner.repo server".to_owned()),
+        "repo session must be started headlessly: {invocations:?}"
+    );
+    assert!(
+        invocations.iter().any(|l| l.contains("herdr workspace create ")),
+        "issue workspace must be created after startup: {invocations:?}"
+    );
+}
+
+#[test]
+fn open_main_with_herdr_attaches_to_repo_session() {
+    // Arrange: セッション未起動 → ヘッドレス起動のみ (workspace 操作はしない)
+    let env = TestEnv::new();
+    let home = env.home_str();
+    env.write_home(".config/wsm/config.toml", HERDR_CONFIG)
+        .stub_once("^herdr session list --json$", &herdr_sessions_json(&home, false))
+        .stub("^herdr session list --json$", &herdr_sessions_json(&home, true));
+
+    // Act
+    let out = env.run(&["open", "--repo", "owner/repo", "--issue", "main"]);
+
+    // Assert
+    assert_eq!(out.status, Some(0));
+    let v = out.stdout_json();
+    assert_eq!(v["session"], "owner.repo");
+    assert_eq!(v["message"], "Opened owner/repo (main) [herdr]");
+    let script = format!(
+        "cd '{home}/ghq/github.com/owner/repo' && exec '{}/herdr' --session 'owner.repo'",
+        env.fakes_dir_str()
+    );
+    assert_eq!(v["attach_command"], format!("/bin/bash -lc {}", zsh_quoted(&script)));
+    let invocations = env.invocations();
+    assert!(invocations.contains(&"herdr --session owner.repo server".to_owned()));
+    assert!(
+        !invocations.iter().any(|l| l.contains("workspace")),
+        "main open must not touch workspaces: {invocations:?}"
+    );
+}
+
+#[test]
+fn remove_issue_with_herdr_closes_workspace_only() {
+    // Arrange: Issue 42 の workspace の他にも workspace が残っている
+    let env = TestEnv::new();
+    let home = env.home_str();
+    let sock = herdr_sock(&home);
+    env.stub("^herdr session list --json$", &herdr_sessions_json(&home, true))
+        .stub(
+            &format!("^HERDR_SOCKET_PATH={sock} herdr workspace list$"),
+            &herdr_workspaces_json(&[("w1", "my-workspace-manager"), ("w7", "42")]),
+        )
+        .stub(&format!("^HERDR_SOCKET_PATH={sock} herdr workspace close "), "")
+        .stub("^docker ps -a", "");
+
+    // Act
+    let out = env.run(&["remove", "--repo", "owner/repo", "--target", "42"]);
+
+    // Assert: workspace close のみで、セッションは残す
+    assert_eq!(out.status, Some(0));
+    let invocations = env.invocations();
+    assert!(
+        invocations.contains(&format!("HERDR_SOCKET_PATH={sock} herdr workspace close w7")),
+        "issue workspace must be closed: {invocations:?}"
+    );
+    assert!(
+        !invocations.iter().any(|l| l.starts_with("herdr session stop")),
+        "session must survive while other workspaces remain: {invocations:?}"
+    );
+}
+
+#[test]
+fn remove_last_herdr_issue_workspace_stops_the_session() {
+    // Arrange: Issue 42 の workspace がセッション内の最後の workspace
+    let env = TestEnv::new();
+    let home = env.home_str();
+    let sock = herdr_sock(&home);
+    env.stub("^herdr session list --json$", &herdr_sessions_json(&home, true))
+        .stub(
+            &format!("^HERDR_SOCKET_PATH={sock} herdr workspace list$"),
+            &herdr_workspaces_json(&[("w7", "42")]),
+        )
+        .stub(&format!("^HERDR_SOCKET_PATH={sock} herdr workspace close "), "")
+        .stub("^herdr session stop owner\\.repo --json$", "")
+        .stub("^herdr session delete owner\\.repo --json$", "")
+        .stub("^docker ps -a", "");
+
+    // Act
+    let out = env.run(&["remove", "--repo", "owner/repo", "--target", "42"]);
+
+    // Assert: 空になったセッションは stop + delete で畳む
+    assert_eq!(out.status, Some(0));
+    let invocations = env.invocations();
+    assert!(invocations.contains(&format!("HERDR_SOCKET_PATH={sock} herdr workspace close w7")));
+    assert!(invocations.contains(&"herdr session stop owner.repo --json".to_owned()));
+    assert!(invocations.contains(&"herdr session delete owner.repo --json".to_owned()));
+}
+
+#[test]
+fn remove_main_with_herdr_refuses_while_issue_workspaces_remain() {
+    // Arrange: セッションに Issue workspace (数字ラベル) が残っている
+    let env = TestEnv::new();
+    let home = env.home_str();
+    let sock = herdr_sock(&home);
+    env.stub("^herdr session list --json$", &herdr_sessions_json(&home, true)).stub(
+        &format!("^HERDR_SOCKET_PATH={sock} herdr workspace list$"),
+        &herdr_workspaces_json(&[("w1", "my-workspace-manager"), ("w7", "42")]),
+    );
+
+    // Act
+    let out = env.run(&["remove", "--repo", "owner/repo", "--target", "main"]);
+
+    // Assert: エラーにして何も壊さない
+    assert_eq!(out.status, Some(1));
+    assert_eq!(
+        out.stderr_json(),
+        json!({ "error": "herdr session has open issue workspaces: owner.repo" })
+    );
+    let invocations = env.invocations();
+    assert!(
+        !invocations.iter().any(|l| l.starts_with("tmux kill-session") || l.starts_with("herdr session stop")),
+        "refusal must not tear anything down: {invocations:?}"
+    );
+}
+
+#[test]
+fn remove_main_with_herdr_stops_session_when_no_issue_workspaces() {
+    // Arrange: Issue workspace は残っていない (自動作成の workspace のみ)
+    let env = TestEnv::new();
+    let home = env.home_str();
+    let sock = herdr_sock(&home);
+    env.stub("^herdr session list --json$", &herdr_sessions_json(&home, true))
+        .stub(
+            &format!("^HERDR_SOCKET_PATH={sock} herdr workspace list$"),
+            &herdr_workspaces_json(&[("w1", "my-workspace-manager")]),
+        )
+        .stub("^herdr session stop owner\\.repo --json$", "")
+        .stub("^herdr session delete owner\\.repo --json$", "")
+        .stub("^docker ps -a", "");
+
+    // Act
+    let out = env.run(&["remove", "--repo", "owner/repo", "--target", "main"]);
+
+    // Assert
+    assert_eq!(out.status, Some(0));
+    assert_eq!(
+        out.stdout_json(),
+        json!({ "status": "ok", "message": "Removed session: owner/repo" })
+    );
+    let invocations = env.invocations();
+    assert!(invocations.contains(&"herdr session stop owner.repo --json".to_owned()));
+    assert!(invocations.contains(&"herdr session delete owner.repo --json".to_owned()));
+}
+
+#[test]
+fn list_issues_marks_herdr_workspace_as_active() {
+    // Arrange: tmux セッションはないが、herdr の repo セッションに
+    // Issue 42 の workspace が生きている (マネージャー設定に依らず検出される)
+    let env = TestEnv::new();
+    let home = env.home_str();
+    let sock = herdr_sock(&home);
+    env.write_home("ghq/github.com/owner/repo/.gitkeep", "")
+        .write_home("worktrees/github.com/owner/repo/42/.gitkeep", "")
+        .stub("^herdr session list --json$", &herdr_sessions_json(&home, true))
+        .stub(
+            &format!("^HERDR_SOCKET_PATH={sock} herdr workspace list$"),
+            &herdr_workspaces_json(&[("w7", "42")]),
+        )
+        .stub(
+            "worktree list --porcelain",
+            &format!(
+                "worktree {home}/worktrees/github.com/owner/repo/42\nHEAD bbb\nbranch refs/heads/feature/42\n\n"
+            ),
+        )
+        .stub("^docker ps -a", "")
+        .stub("^gh issue list --repo owner/repo", "42\tFix bug\n");
+
+    // Act
+    let out = env.run(&["list-issues", "--repo", "owner/repo"]);
+
+    // Assert: main はセッション running で active、42 は workspace 存在で active
+    assert_eq!(out.status, Some(0));
+    assert_eq!(
+        out.stdout_json(),
+        json!([
+            { "id": "main", "title": "main", "active": true, "closed": false, "devcontainer": "none" },
+            { "id": "42", "title": "Fix bug", "active": true, "closed": false, "devcontainer": "none" },
+        ])
+    );
+}
+
 // --- open --config (DevContainer) ---
 
 #[test]

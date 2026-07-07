@@ -20,15 +20,27 @@ const FAKE_COMMANDS: &[&str] = &["gh", "ghq", "git", "tmux", "herdr", "docker", 
 
 const FAKE_SCRIPT: &str = r#"#!/bin/sh
 # 汎用フェイク: 呼び出しを 1 行でログに記録し、パターン表の最初の一致で応答する。
+# HERDR_SOCKET_PATH はセッションのターゲット指定に使われる契約の一部なので、
+# 設定されていればログ行の先頭に含める。.once マーカー付きのスタブは一度
+# 一致したら消える (呼び出しごとに応答が変わる状況の再現用)。
 line="$(basename "$0") $(printf '%s' "$*" | tr '\n' ' ')"
+[ -n "${HERDR_SOCKET_PATH:-}" ] && line="HERDR_SOCKET_PATH=$HERDR_SOCKET_PATH $line"
 printf '%s\n' "$line" >> "$WSM_TEST_LOG"
 for p in "$WSM_TEST_RESPONSES"/*.pattern; do
   [ -e "$p" ] || continue
   if printf '%s\n' "$line" | grep -Eq -- "$(cat "$p")"; then
     base="${p%.pattern}"
-    [ -f "$base.stdout" ] && cat "$base.stdout"
-    [ -f "$base.exit" ] && exit "$(cat "$base.exit")"
-    exit 0
+    out=""
+    [ -f "$base.stdout" ] && out="$base.stdout"
+    code=0
+    [ -f "$base.exit" ] && code="$(cat "$base.exit")"
+    if [ -f "$base.once" ]; then
+      [ -n "$out" ] && cat "$out"
+      rm -f "$base.pattern" "$base.stdout" "$base.exit" "$base.once"
+      exit "$code"
+    fi
+    [ -n "$out" ] && cat "$out"
+    exit "$code"
   fi
 done
 exit 1
@@ -78,13 +90,18 @@ impl TestEnv {
 
     /// パターン (拡張正規表現) に一致する外部コマンド呼び出しに stdout を返す (exit 0)。
     pub fn stub(&self, pattern: &str, stdout: &str) -> &Self {
-        self.add_stub(pattern, stdout, None)
+        self.add_stub(pattern, stdout, None, false)
     }
 
     /// stub() の exit code 指定版。異常系 (devcontainer up 失敗等) のテストで使う。
-    #[allow(dead_code)]
     pub fn stub_exit(&self, pattern: &str, stdout: &str, code: i32) -> &Self {
-        self.add_stub(pattern, stdout, Some(code))
+        self.add_stub(pattern, stdout, Some(code), false)
+    }
+
+    /// 一度一致したら消えるスタブ。同じ呼び出しへの応答が変化する状況
+    /// (セッション起動待ちのポーリング等) の再現に使う。
+    pub fn stub_once(&self, pattern: &str, stdout: &str) -> &Self {
+        self.add_stub(pattern, stdout, None, true)
     }
 
     /// 一時 HOME 配下にファイルを書く (親ディレクトリも作る)。
@@ -111,6 +128,12 @@ impl TestEnv {
             .env_remove("XDG_CONFIG_HOME")
             .env_remove("WSM_SESSION_MANAGER")
             .env_remove("WSM_DEFAULT_DEVCONTAINER_CONFIG")
+            .env_remove("HERDR_SOCKET_PATH")
+            .env_remove("HERDR_SESSION")
+            .env_remove("HERDR_ENV")
+            .env_remove("HERDR_PANE_ID")
+            .env_remove("HERDR_TAB_ID")
+            .env_remove("HERDR_WORKSPACE_ID")
             .output()
             .expect("run wsm-core");
         CoreOutput {
@@ -137,6 +160,11 @@ impl TestEnv {
         self.home().to_str().unwrap().to_owned()
     }
 
+    /// フェイクの置き場 (PATH 先頭)。attach_command のバイナリパス検証に使う。
+    pub fn fakes_dir_str(&self) -> String {
+        self.fakes_dir().to_str().unwrap().to_owned()
+    }
+
     fn fakes_dir(&self) -> PathBuf {
         self.root.path().join("fakes")
     }
@@ -155,13 +183,16 @@ impl TestEnv {
         fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
     }
 
-    fn add_stub(&self, pattern: &str, stdout: &str, code: Option<i32>) -> &Self {
+    fn add_stub(&self, pattern: &str, stdout: &str, code: Option<i32>, once: bool) -> &Self {
         let n = self.stub_count.fetch_add(1, Ordering::SeqCst);
         let base = self.responses_dir().join(format!("{n:03}"));
         fs::write(base.with_extension("pattern"), pattern).unwrap();
         fs::write(base.with_extension("stdout"), stdout).unwrap();
         if let Some(code) = code {
             fs::write(base.with_extension("exit"), code.to_string()).unwrap();
+        }
+        if once {
+            fs::write(base.with_extension("once"), "").unwrap();
         }
         self
     }

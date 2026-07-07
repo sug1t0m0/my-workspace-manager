@@ -1,6 +1,14 @@
 //! SessionManager ロールの tmux / herdr 実装。
-//! セッション名の導出はドメイン層の責務で、ここは受け取った名前を使うだけ。
+//!
+//! Workspace とセッションの対応は実装ごとに異なる:
+//! - tmux: Workspace ごとに 1 セッション (`<ns>.<repo>(-<id>)`)
+//! - herdr: リポジトリ単位のセッション (`<ns>.<repo>`) に、Issue ごとの
+//!   workspace (ラベル = Issue 番号) を追加する。セッション外からの workspace
+//!   操作は HERDR_SOCKET_PATH で対象セッションの socket を指定して行う
+//!
+//! 名前・ラベルの導出はドメイン層の関数を使う (実装側に導出規則を持たせない)。
 
+use crate::domain::{self, WorkspaceId};
 use crate::exec;
 use crate::settings::SessionManager;
 use std::path::Path;
@@ -9,9 +17,15 @@ fn tmux_exists(session: &str) -> bool {
     exec::succeeds("tmux", &["has-session", "-t", &format!("={session}")])
 }
 
-fn herdr_exists(session: &str) -> bool {
+// --- herdr ---
+
+fn herdr_sessions() -> Option<serde_json::Value> {
     exec::stdout_if_ok("herdr", &["session", "list", "--json"])
-        .and_then(|out| serde_json::from_str::<serde_json::Value>(&out).ok())
+        .and_then(|out| serde_json::from_str(&out).ok())
+}
+
+fn herdr_session_running(session: &str) -> bool {
+    herdr_sessions()
         .and_then(|v| v["sessions"].as_array().cloned())
         .is_some_and(|sessions| {
             sessions.iter().any(|s| {
@@ -20,33 +34,171 @@ fn herdr_exists(session: &str) -> bool {
         })
 }
 
-/// マネージャー実装を横断した存在確認 (zsh 版と同じく tmux / herdr の両方を見る)。
-pub fn workspace_session_exists(session: &str) -> bool {
-    tmux_exists(session) || herdr_exists(session)
+fn herdr_socket_path(session: &str) -> Option<String> {
+    herdr_sessions()?["sessions"].as_array()?.iter().find_map(|s| {
+        (s["name"].as_str() == Some(session))
+            .then(|| s["socket_path"].as_str().map(str::to_owned))
+            .flatten()
+    })
 }
 
-/// 冪等な作成。tmux はなければ作る。herdr はアタッチ時に作られるため
-/// インストール確認のみ。
-pub fn ensure(manager: SessionManager, session: &str, cwd: &Path) -> Result<(), String> {
-    match manager {
-        SessionManager::Tmux if tmux_exists(session) => Ok(()),
-        SessionManager::Tmux => {
-            let cwd = cwd.to_string_lossy();
-            exec::succeeds("tmux", &["new-session", "-d", "-s", session, "-c", &cwd])
-                .then_some(())
-                .ok_or_else(|| format!("Failed to create session: {session}"))
+/// 対象セッションの workspace 一覧: (workspace_id, label) の列。
+fn herdr_workspaces(socket: &str) -> Vec<(String, String)> {
+    exec::stdout_if_ok_env("herdr", &["workspace", "list"], &[("HERDR_SOCKET_PATH", socket)])
+        .and_then(|out| serde_json::from_str::<serde_json::Value>(&out).ok())
+        .and_then(|v| v["result"]["workspaces"].as_array().cloned())
+        .map(|workspaces| {
+            workspaces
+                .iter()
+                .filter_map(|w| {
+                    Some((w["workspace_id"].as_str()?.to_owned(), w["label"].as_str()?.to_owned()))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+fn herdr_workspace_id(socket: &str, label: &str) -> Option<String> {
+    herdr_workspaces(socket).into_iter().find_map(|(id, l)| (l == label).then_some(id))
+}
+
+/// セッションをヘッドレスで起動し、running になるまで待つ (冪等)。
+fn herdr_ensure_running(session: &str) -> Result<(), String> {
+    if herdr_session_running(session) {
+        return Ok(());
+    }
+    std::process::Command::new("herdr")
+        .args(["--session", session, "server"])
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn()
+        .map_err(|e| format!("failed to start herdr session: {session} ({e})"))?;
+    for _ in 0..50 {
+        if herdr_session_running(session) {
+            return Ok(());
         }
-        SessionManager::Herdr => exec::which("herdr")
-            .map(|_| ())
-            .ok_or_else(|| "herdr not installed".to_owned()),
+        std::thread::sleep(std::time::Duration::from_millis(100));
+    }
+    Err(format!("failed to start herdr session: {session}"))
+}
+
+fn herdr_stop_and_delete(session: &str) {
+    exec::run_ignoring_failure("herdr", &["session", "stop", session, "--json"]);
+    exec::run_ignoring_failure("herdr", &["session", "delete", session, "--json"]);
+}
+
+fn is_issue_label(label: &str) -> bool {
+    !label.is_empty() && label.chars().all(|c| c.is_ascii_digit())
+}
+
+/// herdr のセッションに wsm 管理の Issue workspace が残っているか。
+/// main の remove を拒否する判定に使う (合成はオーケストレーション層)。
+pub fn herdr_blocks_main_removal(ns_repo: &str) -> bool {
+    let session = domain::session_name(ns_repo, &WorkspaceId::Main);
+    herdr_session_running(&session)
+        && herdr_socket_path(&session).is_some_and(|sock| {
+            herdr_workspaces(&sock).iter().any(|(_, label)| is_issue_label(label))
+        })
+}
+
+// --- Workspace とセッションの対応 (マネージャー実装を横断) ---
+
+/// マネージャー実装を横断した存在確認。tmux はセッション名で、herdr は
+/// リポジトリセッション (+ Issue なら workspace ラベル) で判定する。
+pub fn workspace_session_exists(ns_repo: &str, id: &WorkspaceId) -> bool {
+    if tmux_exists(&domain::session_name(ns_repo, id)) {
+        return true;
+    }
+    let repo_session = domain::session_name(ns_repo, &WorkspaceId::Main);
+    if !herdr_session_running(&repo_session) {
+        return false;
+    }
+    match id {
+        WorkspaceId::Main => true,
+        WorkspaceId::Issue(issue) => herdr_socket_path(&repo_session)
+            .is_some_and(|sock| herdr_workspace_id(&sock, issue).is_some()),
     }
 }
 
-/// マネージャー実装を横断した冪等な破棄。
-pub fn remove_workspace_sessions(session: &str) {
-    exec::run_ignoring_failure("tmux", &["kill-session", "-t", &format!("={session}")]);
-    if exec::which("herdr").is_some() {
-        exec::run_ignoring_failure("herdr", &["session", "delete", session, "--json"]);
+/// Workspace のセッションを冪等に用意し、アタッチ対象のセッション名を返す。
+/// herdr はリポジトリセッションを (なければヘッドレス起動して) 用意し、
+/// Issue なら workspace を作成/フォーカスする。
+pub fn ensure(
+    manager: SessionManager,
+    ns_repo: &str,
+    id: &WorkspaceId,
+    cwd: &Path,
+) -> Result<String, String> {
+    match manager {
+        SessionManager::Tmux => {
+            let session = domain::session_name(ns_repo, id);
+            if !tmux_exists(&session) {
+                let cwd = cwd.to_string_lossy();
+                if !exec::succeeds("tmux", &["new-session", "-d", "-s", &session, "-c", &cwd]) {
+                    return Err(format!("Failed to create session: {session}"));
+                }
+            }
+            Ok(session)
+        }
+        SessionManager::Herdr => {
+            exec::which("herdr").ok_or("herdr not installed")?;
+            let session = domain::session_name(ns_repo, &WorkspaceId::Main);
+            herdr_ensure_running(&session)?;
+            if let WorkspaceId::Issue(issue) = id {
+                let sock = herdr_socket_path(&session)
+                    .ok_or_else(|| format!("failed to resolve herdr socket: {session}"))?;
+                let env = [("HERDR_SOCKET_PATH", sock.as_str())];
+                match herdr_workspace_id(&sock, issue) {
+                    Some(wid) => {
+                        exec::run_ignoring_failure_env("herdr", &["workspace", "focus", &wid], &env)
+                    }
+                    None => {
+                        let cwd = cwd.to_string_lossy();
+                        exec::stdout_if_ok_env(
+                            "herdr",
+                            &["workspace", "create", "--cwd", &cwd, "--label", issue, "--focus"],
+                            &env,
+                        )
+                        .ok_or("failed to create herdr workspace")?;
+                    }
+                }
+            }
+            Ok(session)
+        }
+    }
+}
+
+/// セッション/workspace の冪等な破棄 (マネージャー実装を横断)。
+/// herdr: Issue は workspace close (最後の 1 つならセッションも畳む)、
+/// main はセッションの stop + delete (Issue 残存チェックはオーケストレーション層)。
+pub fn remove_workspace_sessions(ns_repo: &str, id: &WorkspaceId) {
+    exec::run_ignoring_failure(
+        "tmux",
+        &["kill-session", "-t", &format!("={}", domain::session_name(ns_repo, id))],
+    );
+
+    let session = domain::session_name(ns_repo, &WorkspaceId::Main);
+    if !herdr_session_running(&session) {
+        return;
+    }
+    match id {
+        WorkspaceId::Main => herdr_stop_and_delete(&session),
+        WorkspaceId::Issue(issue) => {
+            let Some(sock) = herdr_socket_path(&session) else { return };
+            let workspaces = herdr_workspaces(&sock);
+            let Some((wid, _)) = workspaces.iter().find(|(_, label)| label == issue) else {
+                return;
+            };
+            exec::run_ignoring_failure_env(
+                "herdr",
+                &["workspace", "close", wid],
+                &[("HERDR_SOCKET_PATH", sock.as_str())],
+            );
+            if workspaces.len() <= 1 {
+                herdr_stop_and_delete(&session);
+            }
+        }
     }
 }
 

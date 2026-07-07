@@ -52,7 +52,7 @@ pub fn list_workspaces(home: &Path) -> CmdResult {
     let entries = repostore::list_ns_repos_in_ghq_order()
         .into_iter()
         .flat_map(|ns_repo| {
-            let main_entry = session::workspace_session_exists(&domain::session_name(&ns_repo, &WorkspaceId::Main))
+            let main_entry = session::workspace_session_exists(&ns_repo, &WorkspaceId::Main)
                 .then(|| {
                     json!({
                         "ns_repo": ns_repo, "id": "main", "title": "main",
@@ -64,10 +64,8 @@ pub fn list_workspaces(home: &Path) -> CmdResult {
             let worktree_entries: Vec<Value> = active_issue_ids(home, &ns_repo)
                 .into_iter()
                 .map(|id| {
-                    let active = session::workspace_session_exists(&domain::session_name(
-                        &ns_repo,
-                        &WorkspaceId::Issue(id.clone()),
-                    ));
+                    let active =
+                        session::workspace_session_exists(&ns_repo, &WorkspaceId::Issue(id.clone()));
                     let (title, closed) = tracker::issue_title_and_state(&ns_repo, &id)
                         .map(|(title, state)| (title, state == "CLOSED"))
                         .unwrap_or_else(|| ("unknown".to_owned(), false));
@@ -91,7 +89,7 @@ pub fn list_issues(home: &Path, args: &[String]) -> CmdResult {
     let main_entry = issue_entry(
         "main",
         "main",
-        session::workspace_session_exists(&domain::session_name(&ns_repo, &WorkspaceId::Main)),
+        session::workspace_session_exists(&ns_repo, &WorkspaceId::Main),
         false,
         devcontainer::state(&ns_repo, "main"),
     );
@@ -153,8 +151,7 @@ pub fn open(home: &Path, args: &[String]) -> CmdResult {
             worktree::add(&domain::ghq_path(home, &ns_repo), &domain::branch_name(n), &workspace)?;
         }
     }
-    let session = domain::session_name(&ns_repo, &id);
-    session::ensure(manager, &session, &workspace)?;
+    let session = session::ensure(manager, &ns_repo, &id, &workspace)?;
 
     let outcomes = configs
         .iter()
@@ -195,8 +192,16 @@ pub fn remove(home: &Path, args: &[String]) -> CmdResult {
     let id = WorkspaceId::parse(&target);
     let session = domain::session_name(&ns_repo, &id);
 
+    // herdr のセッションは Issue workspace の器なので、残存中は main を消せない
+    if id == WorkspaceId::Main && session::herdr_blocks_main_removal(&ns_repo) {
+        return Err(format!(
+            "herdr session has open issue workspaces: {}",
+            domain::session_name(&ns_repo, &WorkspaceId::Main)
+        ));
+    }
+
     // 破棄は open の逆順: session → devcontainer → worktree
-    session::remove_workspace_sessions(&session);
+    session::remove_workspace_sessions(&ns_repo, &id);
     devcontainer::down(&ns_repo, id.as_str());
 
     match &id {
@@ -234,7 +239,7 @@ fn active_issue_ids(home: &Path, ns_repo: &str) -> Vec<String> {
             let expected = domain::workspace_path(home, ns_repo, &id);
             Path::new(path) == expected
                 && expected.is_dir()
-                && session::workspace_session_exists(&domain::session_name(ns_repo, &id))
+                && session::workspace_session_exists(ns_repo, &id)
         })
         .map(|(_, issue)| issue)
         .collect()
@@ -244,10 +249,7 @@ fn active_issue_ids(home: &Path, ns_repo: &str) -> Vec<String> {
 /// (アクティブな worktree + main セッションの有無)。
 fn active_count(home: &Path, ns_repo: &str) -> usize {
     active_issue_ids(home, ns_repo).len()
-        + usize::from(session::workspace_session_exists(&domain::session_name(
-            ns_repo,
-            &WorkspaceId::Main,
-        )))
+        + usize::from(session::workspace_session_exists(ns_repo, &WorkspaceId::Main))
 }
 
 fn issue_entry(id: &str, title: &str, active: bool, closed: bool, dc: &str) -> Value {

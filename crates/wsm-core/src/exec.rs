@@ -9,6 +9,26 @@ fn output(cmd: &str, args: &[impl AsRef<OsStr>]) -> Option<Output> {
     Command::new(cmd).args(args).output().ok()
 }
 
+fn output_env(cmd: &str, args: &[impl AsRef<OsStr>], envs: &[(&str, &str)]) -> Option<Output> {
+    Command::new(cmd).args(args).envs(envs.iter().copied()).output().ok()
+}
+
+/// 環境変数付きの stdout_if_ok (herdr のセッションターゲット指定などに使う)。
+pub fn stdout_if_ok_env(
+    cmd: &str,
+    args: &[impl AsRef<OsStr>],
+    envs: &[(&str, &str)],
+) -> Option<String> {
+    output_env(cmd, args, envs)
+        .filter(|o| o.status.success())
+        .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
+}
+
+/// 環境変数付きの run_ignoring_failure。
+pub fn run_ignoring_failure_env(cmd: &str, args: &[impl AsRef<OsStr>], envs: &[(&str, &str)]) {
+    let _ = output_env(cmd, args, envs);
+}
+
 /// コマンドが成功したときだけ stdout を返す (失敗・起動不能は None)。
 pub fn stdout_if_ok(cmd: &str, args: &[impl AsRef<OsStr>]) -> Option<String> {
     output(cmd, args)
