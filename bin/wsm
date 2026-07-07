@@ -1,0 +1,492 @@
+#!/usr/bin/env zsh
+# wsm: Workspace Manager UI
+# fzf による対話的選択・表示整形と、ホストでのターミナル連携 (Terminal アダプタ)
+# を担う。状態の照会・変更はすべて wsm-core (JSON API) に委譲する。
+# ホスト・DevContainer 共通の単一実装で、wsm-core への到達方法 (transport)
+# だけが実行環境で変わる。
+
+set -euo pipefail
+
+# --- Transport ---
+# local: wsm-core が PATH にある環境 (ホスト) で直接実行する
+# ssh:   ホストの wsm-core を SSH 越しに呼ぶ (DevContainer)
+# WSM_TRANSPORT で明示指定がなければ wsm-core の有無で自動判別する。
+
+WSM_HOST="${WSM_HOST:-host.docker.internal}"
+HOST_USER="${HOST_USER:-}"
+HOST_SSH_KEY="${HOST_SSH_KEY:-devcontainer}"
+SSH_OPTS=(-F /dev/null -o StrictHostKeyChecking=no -o LogLevel=ERROR -o IdentityFile=~/.ssh/"$HOST_SSH_KEY")
+
+if [[ -z "${WSM_TRANSPORT:-}" ]]; then
+  if command -v wsm-core >/dev/null 2>&1; then
+    WSM_TRANSPORT=local
+  else
+    WSM_TRANSPORT=ssh
+  fi
+fi
+
+_core() {
+  case "$WSM_TRANSPORT" in
+    local)
+      wsm-core "$@"
+      ;;
+    ssh)
+      local cmd="wsm-core"
+      local arg
+      for arg in "$@"; do
+        cmd+=" $(printf '%q' "$arg")"
+      done
+      ssh "${SSH_OPTS[@]}" "${HOST_USER}@${WSM_HOST}" "$cmd"
+      ;;
+    *)
+      echo "Error: invalid WSM_TRANSPORT: $WSM_TRANSPORT" >&2
+      exit 1
+      ;;
+  esac
+}
+
+# WSM_SESSION_MANAGER が SSH 越しの wsm-core には伝わらないことの注意喚起
+_warn_manager_over_ssh() {
+  echo "Warning: -m/--manager は SSH 経由では反映されません (ホスト側の既定を使用)" >&2
+}
+
+# --- Dependency checks ---
+
+_check_deps() {
+  local missing=()
+  command -v fzf >/dev/null 2>&1 || missing+=(fzf)
+  command -v jq >/dev/null 2>&1 || missing+=(jq)
+
+  if [[ "$WSM_TRANSPORT" == "ssh" ]]; then
+    command -v ssh >/dev/null 2>&1 || missing+=(ssh)
+    if [[ -z "$HOST_USER" ]]; then
+      echo "Error: HOST_USER is not set" >&2
+      exit 1
+    fi
+    if [[ ! -f ~/.ssh/"$HOST_SSH_KEY" ]]; then
+      echo "Error: SSH key not found: ~/.ssh/$HOST_SSH_KEY" >&2
+      exit 1
+    fi
+  fi
+
+  if [[ ${#missing[@]} -gt 0 ]]; then
+    echo "Error: missing dependencies: ${missing[*]}" >&2
+    exit 1
+  fi
+}
+
+# --- Target 解決 ---
+# "<ns>/<repo>#<id>" または bare "<id>" を受け取り "<ns_repo>\t<id>" を返す。
+# bare 形式はカレントディレクトリの git remote (origin) から解決するため、
+# core ではなく UI 層の責務 (worktree 内でも正しく動作する)。
+_resolve_target() {
+  local arg=$1
+  if [[ "$arg" == *"#"* ]]; then
+    local ns_repo=${arg%#*}
+    local id=${arg#*#}
+    if [[ "$ns_repo" != */* || -z "$id" ]]; then
+      echo "Error: invalid form. Use <ns>/<repo>#<id>." >&2
+      return 1
+    fi
+    printf '%s\t%s\n' "$ns_repo" "$id"
+  else
+    local ns_repo
+    ns_repo=$(git remote get-url origin 2>/dev/null | sed -E 's|.*github\.com[:/]||; s|\.git$||')
+    if [[ -z "$ns_repo" ]]; then
+      echo "Error: not in a git repository. Use 'wsm <op|rm>' (interactive) or pass <ns>/<repo>#<id>." >&2
+      return 1
+    fi
+    printf '%s\t%s\n' "$ns_repo" "$arg"
+  fi
+}
+
+# --- Terminal アダプタ ---
+# open 後にセッションへアタッチしたタブを端末エミュレーターに開かせる。
+# 現在の実装は Ghostty (macOS)。SSH transport (DevContainer) では
+# アタッチできないため何もしない。
+
+_terminal_available() {
+  [[ "$WSM_TRANSPORT" == "local" && "$OSTYPE" == darwin* ]]
+}
+
+# manager は open 応答の値を渡す (設定の解決は core の責務)。
+_attach_command() {
+  local manager=$1
+  local session=$2
+  local workspace=$3
+
+  case "$manager" in
+    tmux)
+      local tmux_bin=${commands[tmux]:-/opt/homebrew/bin/tmux}
+      printf "%s attach-session -t '%s'" "$tmux_bin" "$session"
+      ;;
+    herdr)
+      local herdr_bin=${commands[herdr]:-"$HOME/.local/bin/herdr"}
+      local script="cd '$workspace' && exec '$herdr_bin' --session '$session'"
+      printf "/bin/bash -lc %q" "$script"
+      ;;
+    *)
+      echo "Error: invalid session manager: $manager" >&2
+      return 1
+      ;;
+  esac
+}
+
+_open_terminal_tab() {
+  local command=$1
+
+  osascript \
+    -e 'on run argv' \
+    -e '  set terminalCommand to item 1 of argv' \
+    -e '  tell application "Ghostty"' \
+    -e '    set cfg to new surface configuration from {command:terminalCommand}' \
+    -e '    if (count windows) is 0 then' \
+    -e '      set w to new window with configuration cfg' \
+    -e '    else' \
+    -e '      set t to new tab in window 1 with configuration cfg' \
+    -e '      select tab t' \
+    -e '    end if' \
+    -e '  end tell' \
+    -e 'end run' \
+    "$command"
+}
+
+# --- UI parts ---
+
+_pick_session_manager() {
+  local selected
+  selected=$(printf '%s\n' \
+    "tmux"$'\t'"tmux  (existing workflow)" \
+    "herdr"$'\t'"herdr" \
+    | fzf --with-nth=2.. --delimiter=$'\t' --height=40% --reverse --prompt="Session manager> ")
+
+  [[ -n "$selected" ]] && echo "$selected" | cut -f1
+}
+
+# Format devcontainer state into a display indicator.
+_dc_indicator() {
+  case "$1" in
+    running) echo "🟢 dev" ;;
+    stopped) echo "🔴 dev" ;;
+    *)       echo "" ;;
+  esac
+}
+
+# Step 1: プロジェクト選択
+_pick_project() {
+  local TAB=$'\t'
+
+  local json=$(_core list-projects)
+  local items=()
+
+  local projects=$(echo "$json" | jq -r '.[] | "\(.number)\t\(.title)"')
+  if [[ -n "$projects" ]]; then
+    while IFS=$'\t' read -r num title; do
+      items+=("${num}${TAB}${title}")
+    done <<< "$projects"
+  fi
+
+  items+=("none${TAB}(プロジェクトなし)")
+
+  local selected=$(printf '%s\n' "${items[@]}" \
+    | fzf --with-nth=2.. --delimiter=$'\t' --height=40% --reverse --prompt="Project> ")
+  if [[ -n "$selected" ]]; then
+    echo "$selected" | cut -f1
+  fi
+}
+
+# Step 2: リポジトリ選択
+_pick_repo() {
+  local project_num=$1
+  local TAB=$'\t'
+
+  local json=$(_core list-repos --project "$project_num")
+  local count=$(echo "$json" | jq 'length')
+
+  if [[ "$count" -eq 0 ]]; then
+    echo "No repositories found" >&2
+    return 1
+  fi
+
+  local items=()
+  while IFS=$'\t' read -r repo active_count; do
+    local display="${repo}"
+    if [[ "$active_count" -gt 0 ]]; then
+      display+="  (${active_count} workspaces)"
+    fi
+    items+=("${repo}${TAB}${display}")
+  done < <(echo "$json" | jq -r '.[] | "\(.ns_repo)\t\(.active_count)"')
+
+  local selected=$(printf '%s\n' "${items[@]}" \
+    | fzf --with-nth=2.. --delimiter=$'\t' --height=40% --reverse --prompt="Repository> ")
+  if [[ -n "$selected" ]]; then
+    echo "$selected" | cut -f1
+  fi
+}
+
+# Step 3: Issue / ワークスペース選択
+_pick_issue() {
+  local ns_repo=$1
+  local TAB=$'\t'
+
+  local json=$(_core list-issues --repo "$ns_repo")
+  local items=()
+
+  while IFS=$'\t' read -r id title active closed dc; do
+    local display=""
+    if [[ "$id" == "main" ]]; then
+      display="main  (ディスカッション・調査用)"
+    else
+      display="#${id}  ${title}"
+    fi
+    if [[ "$closed" == "true" ]]; then
+      display+="  ✔ closed"
+    fi
+    if [[ "$active" == "true" ]]; then
+      display+="  ● active"
+    fi
+    local dc_disp=$(_dc_indicator "$dc")
+    [[ -n "$dc_disp" ]] && display+="  ${dc_disp}"
+    items+=("${id}${TAB}${display}")
+  done < <(echo "$json" | jq -r '.[] | "\(.id)\t\(.title)\t\(.active)\t\(.closed)\t\(.devcontainer // "none")"')
+
+  local selected=$(printf '%s\n' "${items[@]}" \
+    | fzf --with-nth=2.. --delimiter=$'\t' --height=40% --reverse --prompt="Issue> " --header="${ns_repo}")
+  if [[ -n "$selected" ]]; then
+    echo "$selected" | cut -f1
+  fi
+}
+
+# Multi-select fzf picker for devcontainer configs.
+# Echoes selected config paths separated by newlines (empty = no container).
+_pick_devcontainer() {
+  local ns_repo=$1 id=$2
+  local TAB=$'\t'
+
+  local json=$(_core list-devcontainer-configs --repo "$ns_repo" --issue "$id")
+  local count=$(echo "$json" | jq 'length')
+
+  if [[ "$count" -eq 0 ]]; then
+    echo "No devcontainer configs available" >&2
+    return 0
+  fi
+
+  local items=("(none)${TAB}none${TAB}(no devcontainer)")
+  # Note: avoid `path` as a variable name — it is tied to $PATH in zsh.
+  local cfg_path cfg_name cfg_source
+  while IFS=$'\t' read -r cfg_path cfg_name cfg_source; do
+    items+=("${cfg_path}${TAB}${cfg_name}${TAB}[${cfg_source}] ${cfg_name}  ${cfg_path}")
+  done < <(echo "$json" | jq -r '.[] | "\(.path)\t\(.name)\t\(.source)"')
+
+  local selected=$(printf '%s\n' "${items[@]}" \
+    | fzf --multi --with-nth=3.. --delimiter=$'\t' --height=40% --reverse \
+          --prompt="Container (TAB=multi)> " --header="${ns_repo} #${id}")
+  [[ -z "$selected" ]] && return 0
+
+  # If "(none)" is among the picks, ignore everything else.
+  if echo "$selected" | grep -q '^(none)\t'; then
+    return 0
+  fi
+
+  echo "$selected" | cut -f1
+}
+
+# wsm rm 用: 全リポジトリの既存ワークスペースから選択
+_pick_rm() {
+  local TAB=$'\t'
+  local json=$(_core list-workspaces)
+  local count=$(echo "$json" | jq 'length')
+
+  if [[ "$count" -eq 0 ]]; then
+    echo "No active workspaces to remove" >&2
+    return 1
+  fi
+
+  local items=()
+  while IFS=$'\t' read -r repo id title active closed dc; do
+    local display="${repo}"
+    if [[ "$id" == "main" ]]; then
+      display+="  main"
+    else
+      display+="  #${id}  ${title}"
+    fi
+    if [[ "$closed" == "true" ]]; then
+      display+="  ✔ closed"
+    fi
+    if [[ "$active" == "true" ]]; then
+      display+="  ● active"
+    fi
+    local dc_disp=$(_dc_indicator "$dc")
+    [[ -n "$dc_disp" ]] && display+="  ${dc_disp}"
+    items+=("${repo}${TAB}${id}${TAB}${display}")
+  done < <(echo "$json" | jq -r '.[] | "\(.ns_repo)\t\(.id)\t\(.title)\t\(.active)\t\(.closed)\t\(.devcontainer // "none")"')
+
+  local selected=$(printf '%s\n' "${items[@]}" \
+    | fzf --with-nth=3.. --delimiter=$'\t' --height=40% --reverse --prompt="wsm rm> ")
+  if [[ -n "$selected" ]]; then
+    # ns_repo\ttarget_id を返す
+    echo "$selected" | cut -f1,2
+  fi
+}
+
+# wsm ls: 全リポジトリの既存ワークスペースを一覧表示
+_do_ls() {
+  local json=$(_core list-workspaces)
+  local count=$(echo "$json" | jq 'length')
+
+  if [[ "$count" -eq 0 ]]; then
+    echo "No active workspaces"
+    return
+  fi
+
+  # Group by ns_repo and display
+  local prev_repo=""
+  echo "$json" | jq -r '.[] | "\(.ns_repo)\t\(.id)\t\(.title)\t\(.active)\t\(.closed)\t\(.devcontainer // "none")"' | \
+  while IFS=$'\t' read -r repo id title active closed dc; do
+    if [[ "$repo" != "$prev_repo" ]]; then
+      [[ -n "$prev_repo" ]] && echo ""
+      echo "${repo}:"
+      prev_repo="$repo"
+    fi
+
+    local line=""
+    if [[ "$id" == "main" ]]; then
+      line="  main  (ディスカッション・調査用)"
+    else
+      line="  #${id}  ${title}"
+    fi
+
+    if [[ "$closed" == "true" ]]; then
+      line+="  ✔ closed"
+    fi
+    if [[ "$active" == "true" ]]; then
+      line+="  ● active"
+    fi
+    local dc_disp=$(_dc_indicator "$dc")
+    [[ -n "$dc_disp" ]] && line+="  ${dc_disp}"
+    echo "$line"
+  done
+
+  echo ""
+}
+
+# --- Main ---
+
+_check_deps
+
+# セッションマネージャーの既定はホスト側の config.toml で決まる (core が読む)。
+# 環境変数 WSM_SESSION_MANAGER はその場のオーバーライドで、-m フラグや
+# fzf での選択時のみ export してローカル実行の core に伝える (SSH では伝わらない)。
+[[ -n "${WSM_SESSION_MANAGER:-}" ]] && export WSM_SESSION_MANAGER
+
+cmd=${1:-}
+shift 2>/dev/null || true
+
+case "$cmd" in
+  "op")
+    target="" with_devcontainer=false manager_set=false
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        -d|--devcontainer) with_devcontainer=true; shift ;;
+        -m|--manager) export WSM_SESSION_MANAGER=$2; manager_set=true; shift 2 ;;
+        *) target=$1; shift ;;
+      esac
+    done
+    [[ "$WSM_TRANSPORT" == "ssh" && "$manager_set" == true ]] && _warn_manager_over_ssh
+
+    ns_repo="" issue_id=""
+    if [[ -z "$target" ]]; then
+      if [[ "$WSM_TRANSPORT" == "local" && "$manager_set" == false ]]; then
+        selected_manager=$(_pick_session_manager)
+        [[ -z "$selected_manager" ]] && exit 0
+        export WSM_SESSION_MANAGER=$selected_manager
+      fi
+
+      # 段階選択: プロジェクト → リポジトリ → Issue → DevContainer
+      project_num=$(_pick_project)
+      [[ -z "$project_num" ]] && exit 0
+
+      ns_repo=$(_pick_repo "$project_num")
+      [[ -z "$ns_repo" ]] && exit 0
+
+      issue_id=$(_pick_issue "$ns_repo")
+      [[ -z "$issue_id" ]] && exit 0
+
+      with_devcontainer=true
+    else
+      resolved=$(_resolve_target "$target") || exit 1
+      ns_repo=${resolved%%$'\t'*}
+      issue_id=${resolved#*$'\t'}
+    fi
+
+    open_args=()
+    if [[ "$with_devcontainer" == true ]]; then
+      picked=$(_pick_devcontainer "$ns_repo" "$issue_id") || exit 1
+      if [[ -n "$picked" ]]; then
+        while IFS= read -r cfg; do
+          [[ -n "$cfg" ]] && open_args+=(--config "$cfg")
+        done <<< "$picked"
+      fi
+    fi
+
+    result=$(_core open --repo "$ns_repo" --issue "$issue_id" "${open_args[@]}")
+    echo "$result" | jq -r '.message // .error'
+    [[ $(echo "$result" | jq -r '.status // empty') == "ok" ]] || exit 1
+
+    if _terminal_available; then
+      session_name=$(echo "$result" | jq -r '.session // empty')
+      workspace=$(echo "$result" | jq -r '.path // empty')
+      manager=$(echo "$result" | jq -r '.manager // "tmux"')
+      [[ -n "$session_name" ]] && _open_terminal_tab "$(_attach_command "$manager" "$session_name" "$workspace")"
+    fi
+    ;;
+
+  "rm")
+    target="" manager_set=false
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        -m|--manager) export WSM_SESSION_MANAGER=$2; manager_set=true; shift 2 ;;
+        *) target=$1; shift ;;
+      esac
+    done
+    [[ "$WSM_TRANSPORT" == "ssh" && "$manager_set" == true ]] && _warn_manager_over_ssh
+
+    if [[ -n "$target" ]]; then
+      resolved=$(_resolve_target "$target") || exit 1
+      ns_repo=${resolved%%$'\t'*}
+      target_id=${resolved#*$'\t'}
+    else
+      # 既存ワークスペースから選択して削除
+      selected=$(_pick_rm)
+      [[ -z "$selected" ]] && exit 0
+
+      ns_repo=${selected%%$'\t'*}
+      target_id=${selected#*$'\t'}
+    fi
+
+    result=$(_core remove --repo "$ns_repo" --target "$target_id")
+    echo "$result" | jq -r '.message // .error'
+    ;;
+
+  "ls")
+    manager_set=false
+    while [[ $# -gt 0 ]]; do
+      case "$1" in
+        -m|--manager) export WSM_SESSION_MANAGER=$2; manager_set=true; shift 2 ;;
+        *) shift ;;
+      esac
+    done
+    [[ "$WSM_TRANSPORT" == "ssh" && "$manager_set" == true ]] && _warn_manager_over_ssh
+    _do_ls
+    ;;
+
+  *)
+    echo "Usage: wsm <op|rm|ls>"
+    echo ""
+    echo "  wsm op [-d] [-m tmux|herdr] [<id>|<ns>/<repo>#<id>]   Open workspace"
+    echo "                                        (-d: pick devcontainer(s))"
+    echo "                                        bare <id>: cwd-resolved repo"
+    echo "  wsm rm [-m tmux|herdr] [<id>|<ns>/<repo>#<id>]        Remove workspace"
+    echo "  wsm ls [-m tmux|herdr]                                List workspaces"
+    ;;
+esac

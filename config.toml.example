@@ -1,0 +1,10 @@
+# wsm (Workspace Manager) のマシン設定の例。wsm-core が読む (ホストのみに配置)。
+# 実ファイルは ~/.config/wsm/config.toml (XDG_CONFIG_HOME 準拠) に置く。
+# 同名の環境変数 (WSM_SESSION_MANAGER 等) はその場のオーバーライドとして優先される。
+# docs/wsm.md の Settings 節を参照。
+
+# 既定のセッションマネージャー ("tmux" / "herdr")
+session_manager = "tmux"
+
+# フォールバック devcontainer 設定 (リポジトリに devcontainer.json がないときの既定)
+default_devcontainer_config = "/path/to/your/default/.devcontainer/devcontainer.json"

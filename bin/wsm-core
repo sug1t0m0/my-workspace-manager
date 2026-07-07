@@ -1,0 +1,805 @@
+#!/usr/bin/env zsh
+# wsm-core: Workspace Manager core (JSON API)
+# Host-side logic for workspace management. Called directly on macOS
+# or via SSH from DevContainer (wsm-client).
+
+set -euo pipefail
+
+# --- Argument validation ---
+
+_validate_arg() {
+  local name=$1 value=$2
+  if [[ ! "$value" =~ ^[a-zA-Z0-9/_.-]+$ ]]; then
+    echo "{\"error\":\"Invalid $name: $value\"}" >&2
+    exit 1
+  fi
+}
+
+# --- Settings ---
+# マシン設定は ~/.config/wsm/config.toml (TOML)。環境変数が同名設定を上書きする。
+# core は常にホストで動くため、transport にかかわらず同じ設定が見える。
+
+_config_file() {
+  echo "${XDG_CONFIG_HOME:-$HOME/.config}/wsm/config.toml"
+}
+
+# Read a top-level string key from config.toml. Echoes empty if absent.
+# Supports only the subset we write: `key = "value"` with optional comment.
+_config_get() {
+  local key=$1
+  local file=$(_config_file)
+  [[ -f "$file" ]] || return 0
+  sed -n -E "s/^${key}[[:space:]]*=[[:space:]]*\"([^\"]*)\".*$/\1/p" "$file" | head -1
+}
+
+# --- Helpers ---
+
+_ghq_path() {
+  echo "$HOME/ghq/github.com/$1"
+}
+
+# Resolve the GitHub user via gh. Used when --user is omitted so that
+# UI layers never need to call gh themselves.
+_gh_user() {
+  gh api user -q .login 2>/dev/null
+}
+
+# Workspace path for a given (ns_repo, id). id="main" -> ghq path, else worktree path.
+_workspace_path() {
+  local ns_repo=$1 id=$2
+  if [[ "$id" == "main" ]]; then
+    echo "$HOME/ghq/github.com/${ns_repo}"
+  else
+    echo "$HOME/worktrees/github.com/${ns_repo}/${id}"
+  fi
+}
+
+# Resolve once and cache: called in loops, and _config_get spawns a subshell.
+typeset -g _session_manager_cache=""
+_session_manager() {
+  if [[ -z "$_session_manager_cache" ]]; then
+    local manager=${WSM_SESSION_MANAGER:-$(_config_get session_manager)}
+    manager=${manager:-tmux}
+    case "$manager" in
+      tmux|herdr) _session_manager_cache=$manager ;;
+      *)
+        echo "{\"error\":\"Invalid session manager: $manager\"}" >&2
+        exit 1
+        ;;
+    esac
+  fi
+  echo "$_session_manager_cache"
+}
+
+_session_name() {
+  local ns_repo=$1 id=$2
+  local repo_key=${ns_repo//\//.}
+
+  if [[ "$id" == "main" ]]; then
+    echo "$repo_key"
+  else
+    echo "${repo_key}-${id}"
+  fi
+}
+
+_legacy_tmux_session_name() {
+  local ns_repo=$1 id=$2
+  if [[ "$id" == "main" ]]; then
+    echo "$ns_repo"
+  else
+    echo "${ns_repo}-${id}"
+  fi
+}
+
+_tmux_session_exists() {
+  local session=$1
+  tmux has-session -t "=$session" 2>/dev/null
+}
+
+_herdr_session_exists() {
+  local session=$1
+  command -v herdr >/dev/null 2>&1 || return 1
+  herdr session list --json 2>/dev/null \
+    | jq -e --arg name "$session" '.sessions[] | select(.name == $name and .running == true)' >/dev/null
+}
+
+_session_exists() {
+  local session=$1
+  case "$(_session_manager)" in
+    tmux) _tmux_session_exists "$session" ;;
+    herdr) _herdr_session_exists "$session" ;;
+  esac
+}
+
+_workspace_session_exists() {
+  local ns_repo=$1 id=$2
+  local canonical=$(_session_name "$ns_repo" "$id")
+  local legacy=$(_legacy_tmux_session_name "$ns_repo" "$id")
+
+  _tmux_session_exists "$canonical" \
+    || _tmux_session_exists "$legacy" \
+    || _herdr_session_exists "$canonical"
+}
+
+_session_names() {
+  case "$(_session_manager)" in
+    tmux)
+      tmux list-sessions -F '#{session_name}' 2>/dev/null || true
+      ;;
+    herdr)
+      command -v herdr >/dev/null 2>&1 || return 0
+      herdr session list --json 2>/dev/null \
+        | jq -r '.sessions[] | select(.running == true) | .name' 2>/dev/null || true
+      ;;
+  esac
+}
+
+_remove_workspace_sessions() {
+  local ns_repo=$1 id=$2
+  local canonical=$(_session_name "$ns_repo" "$id")
+  local legacy=$(_legacy_tmux_session_name "$ns_repo" "$id")
+
+  tmux kill-session -t "=$canonical" 2>/dev/null || true
+  [[ "$legacy" != "$canonical" ]] && tmux kill-session -t "=$legacy" 2>/dev/null || true
+
+  if command -v herdr >/dev/null 2>&1; then
+    herdr session delete "$canonical" --json >/dev/null 2>&1 || true
+  fi
+}
+
+_ensure_session() {
+  local session=$1 cwd=$2
+  case "$(_session_manager)" in
+    tmux)
+      if ! _tmux_session_exists "$session"; then
+        tmux new-session -d -s "$session" -c "$cwd"
+      fi
+      ;;
+    herdr)
+      command -v herdr >/dev/null 2>&1 || {
+        echo "{\"error\":\"herdr not installed\"}" >&2
+        exit 1
+      }
+      if ! _herdr_session_exists "$session"; then
+        (cd "$cwd" && nohup herdr --session "$session" >/dev/null 2>&1 </dev/null &)
+        for _ in {1..20}; do
+          _herdr_session_exists "$session" && break
+          sleep 0.1
+        done
+        if ! _herdr_session_exists "$session"; then
+          echo "{\"error\":\"Failed to start herdr session: $session\"}" >&2
+          exit 1
+        fi
+      fi
+      ;;
+  esac
+}
+
+_ensure_workspace_session() {
+  local ns_repo=$1 id=$2 cwd=$3
+  local session=$(_session_name "$ns_repo" "$id")
+
+  if [[ "$(_session_manager)" == "tmux" ]]; then
+    local legacy=$(_legacy_tmux_session_name "$ns_repo" "$id")
+    if _tmux_session_exists "$legacy"; then
+      echo "$legacy"
+      return 0
+    fi
+  fi
+
+  _ensure_session "$session" "$cwd"
+  echo "$session"
+}
+
+_remove_session() {
+  local session=$1
+  case "$(_session_manager)" in
+    tmux)
+      tmux kill-session -t "=$session" 2>/dev/null || true
+      ;;
+    herdr)
+      command -v herdr >/dev/null 2>&1 || return 0
+      herdr session delete "$session" --json >/dev/null 2>&1 || true
+      ;;
+  esac
+}
+
+# True if the workspace path has a devcontainer.json.
+_has_devcontainer_config() {
+  local ws=$1
+  [[ -f "$ws/.devcontainer/devcontainer.json" ]] || [[ -f "$ws/.devcontainer.json" ]]
+}
+
+# Echo path to the fallback devcontainer.json if available, else empty.
+# The location is machine config (config.toml の default_devcontainer_config、
+# 環境変数 $WSM_DEFAULT_DEVCONTAINER_CONFIG で上書き可)。built-in default はない。
+_default_devcontainer_config() {
+  local p=${WSM_DEFAULT_DEVCONTAINER_CONFIG:-$(_config_get default_devcontainer_config)}
+  p=${p/#\~\//$HOME/}
+  [[ -n "$p" && -f "$p" ]] && echo "$p"
+}
+
+# Echo aggregated devcontainer state: running | stopped | none
+# - running: at least one matching container is running
+# - stopped: matching containers exist but none running
+# - none:    no matching containers
+_devcontainer_state() {
+  local ns_repo=$1 id=$2
+  command -v docker >/dev/null 2>&1 || { echo none; return; }
+
+  local states
+  states=$(docker ps -a \
+    --filter "label=wsm.ns-repo=$ns_repo" \
+    --filter "label=wsm.issue-id=$id" \
+    --format '{{.State}}' 2>/dev/null)
+
+  [[ -z "$states" ]] && { echo none; return; }
+  echo "$states" | grep -qx running && { echo running; return; }
+  echo stopped
+}
+
+# Compute container-side worktree and git common-dir paths.
+# devcontainers/cli with --mount-workspace-git-root + --mount-git-worktree-common-dir
+# mounts both under /workspaces/, preserving their host paths relative to $HOME.
+# Echos "<container_worktree>\t<container_common>".
+_devcontainer_paths() {
+  local ns_repo=$1 worktree_path=$2
+  local common_dir="$HOME/ghq/github.com/${ns_repo}/.git"
+  local container_worktree="/workspaces/${worktree_path#$HOME/}"
+  local container_common="/workspaces/${common_dir#$HOME/}"
+  printf '%s\t%s\n' "$container_worktree" "$container_common"
+}
+
+# Map a devcontainer config path to a stable label value used as wsm.config.
+# - <workspace>/.devcontainer/devcontainer.json or <workspace>/.devcontainer.json -> "repo"
+# - <workspace>/.devcontainer/<name>/devcontainer.json -> "repo-<name>"
+# - anything else (e.g., default fallback) -> "default"
+_config_name() {
+  local workspace=$1 config_path=$2
+  if [[ "$config_path" == "$workspace/.devcontainer/devcontainer.json" ]] \
+    || [[ "$config_path" == "$workspace/.devcontainer.json" ]]; then
+    echo "repo"
+  elif [[ "$config_path" == "$workspace/.devcontainer/"*/devcontainer.json ]]; then
+    local rel=${config_path#$workspace/.devcontainer/}
+    echo "repo-${rel%/devcontainer.json}"
+  else
+    echo "default"
+  fi
+}
+
+# Per-config aggregated state for a single (ns_repo, id, cname) combination.
+# Returns: running | stopped | none
+_devcontainer_state_for_config() {
+  local ns_repo=$1 id=$2 cname=$3
+  command -v docker >/dev/null 2>&1 || { echo none; return; }
+  local state
+  state=$(docker ps -a \
+    --filter "label=wsm.ns-repo=$ns_repo" \
+    --filter "label=wsm.issue-id=$id" \
+    --filter "label=wsm.config=$cname" \
+    --format '{{.State}}' 2>/dev/null | head -1)
+  case "$state" in
+    running) echo running ;;
+    "")      echo none ;;
+    *)       echo stopped ;;
+  esac
+}
+
+# Bring up one devcontainer for (ns_repo, id) using the given config path.
+# Worktrees get --mount-git-worktree-common-dir plus WSM_* remote-env.
+#
+# Idempotent re-entry contract (relies on devcontainer/cli's --id-label semantics):
+#   - container missing  → builds and starts (outcome: "created")
+#   - container stopped  → docker start (outcome: "started")
+#   - container running  → no-op reuse   (outcome: "reused")
+# `--remove-existing-container` is intentionally NOT passed, so persisted volumes
+# and onCreate side effects survive across re-entry.
+#
+# On success echoes the outcome word on stdout. Returns non-zero on failure.
+_devcontainer_up() {
+  local ns_repo=$1 id=$2 config_path=$3
+  local ws=$(_workspace_path "$ns_repo" "$id")
+
+  command -v devcontainer >/dev/null 2>&1 || {
+    echo "{\"error\":\"devcontainer CLI not installed\"}" >&2
+    return 1
+  }
+  [[ -f "$config_path" ]] || {
+    echo "{\"error\":\"Config not found: $config_path\"}" >&2
+    return 1
+  }
+
+  local cname=$(_config_name "$ws" "$config_path")
+  local args=(
+    --workspace-folder "$ws"
+    --config "$config_path"
+    --id-label "wsm.ns-repo=$ns_repo"
+    --id-label "wsm.issue-id=$id"
+    --id-label "wsm.config=$cname"
+  )
+
+  if [[ "$id" != "main" ]]; then
+    args+=(--mount-git-worktree-common-dir)
+    local cpaths=$(_devcontainer_paths "$ns_repo" "$ws")
+    local container_worktree=${cpaths%%$'\t'*}
+    local container_common=${cpaths#*$'\t'}
+    args+=(--remote-env "WSM_WORKTREE_PATH=${container_worktree}")
+    [[ -n "$container_common" ]] && args+=(--remote-env "WSM_WORKTREE_COMMON_DIR=${container_common}")
+  fi
+
+  local before=$(_devcontainer_state_for_config "$ns_repo" "$id" "$cname")
+  devcontainer up "${args[@]}" >/dev/null 2>&1 || return 1
+  case "$before" in
+    running) echo "reused" ;;
+    stopped) echo "started" ;;
+    *)       echo "created" ;;
+  esac
+}
+
+# Add a tmux window in <session> that drops into the running devcontainer
+# (zsh at the in-container worktree path).
+#
+# Idempotent re-entry contract:
+#   - dedup is keyed by container id stored as the pane user option @wsm_cid
+#   - if the prior 🐳 window was closed, the user option is gone with the pane
+#     so a fresh window is created on the next call (auto-recreate)
+#   - if a pane in the session still carries @wsm_cid for this container, skip
+_add_devcontainer_window() {
+  local session=$1 ns_repo=$2 id=$3 config_path=$4
+  local ws=$(_workspace_path "$ns_repo" "$id")
+  local cname=$(_config_name "$ws" "$config_path")
+
+  command -v docker >/dev/null 2>&1 || return 0
+
+  local cid
+  cid=$(docker ps -q \
+    --filter "label=wsm.ns-repo=$ns_repo" \
+    --filter "label=wsm.issue-id=$id" \
+    --filter "label=wsm.config=$cname" 2>/dev/null | head -1)
+  [[ -z "$cid" ]] && return 0
+
+  local container_workdir
+  if [[ "$id" == "main" ]]; then
+    container_workdir="/workspaces/ghq/github.com/${ns_repo}"
+  else
+    container_workdir="/workspaces/worktrees/github.com/${ns_repo}/${id}"
+  fi
+
+  # Honor remoteUser from devcontainer.metadata so file ownership matches host UID.
+  local remote_user
+  remote_user=$(docker inspect --format '{{index .Config.Labels "devcontainer.metadata"}}' "$cid" 2>/dev/null \
+    | jq -r 'map(select(.remoteUser != null)) | .[0].remoteUser // empty' 2>/dev/null)
+
+  # Dedup by container id stored as a pane user option.
+  if tmux list-panes -s -t "$session" -F '#{@wsm_cid}' 2>/dev/null | grep -qxF "$cid"; then
+    return 0
+  fi
+
+  local user_arg=""
+  [[ -n "$remote_user" ]] && user_arg="--user '$remote_user'"
+
+  local new_pane
+  new_pane=$(tmux new-window -d -P -F '#{pane_id}' -t "${session}:" -n '🐳' \
+    "docker exec -it $user_arg -w '$container_workdir' '$cid' zsh" 2>/dev/null) || return 0
+  [[ -n "$new_pane" ]] && tmux set-option -p -t "$new_pane" @wsm_cid "$cid" 2>/dev/null || true
+}
+
+# Stop and remove the devcontainer matching the labels, if any.
+_devcontainer_down() {
+  local ns_repo=$1 id=$2
+  command -v docker >/dev/null 2>&1 || return 0
+
+  local ids
+  ids=$(docker ps -a \
+    --filter "label=wsm.ns-repo=$ns_repo" \
+    --filter "label=wsm.issue-id=$id" \
+    --format '{{.ID}}' 2>/dev/null)
+  [[ -z "$ids" ]] && return 0
+
+  echo "$ids" | while IFS= read -r cid; do
+    docker rm -f "$cid" >/dev/null 2>&1 || true
+  done
+}
+
+_repo_active_ids() {
+  local ns_repo=$1
+  local ghq_path=$(_ghq_path "$ns_repo")
+  [[ -d "$ghq_path" ]] || return 0
+
+  local worktree_base="$HOME/worktrees/github.com/${ns_repo}"
+  local current_path=""
+
+  git -C "$ghq_path" worktree list --porcelain 2>/dev/null | while IFS= read -r line; do
+    if [[ "$line" == worktree\ * ]]; then
+      current_path=${line#worktree }
+    elif [[ "$line" == "branch refs/heads/feature/"* && -n "$current_path" ]]; then
+      local issue_id=${line#branch refs/heads/feature/}
+      local expected_path="${worktree_base}/${issue_id}"
+      local session_name=$(_session_name "$ns_repo" "$issue_id")
+
+      if [[ "$current_path" == "$expected_path" ]] \
+        && [[ -d "$expected_path" ]] \
+        && _workspace_session_exists "$ns_repo" "$issue_id"; then
+        echo "$issue_id"
+      fi
+      current_path=""
+    elif [[ -z "$line" ]]; then
+      current_path=""
+    fi
+  done
+}
+
+# --- Subcommands ---
+
+cmd_list_projects() {
+  local user=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --user) user=$2; shift 2 ;;
+      *) shift ;;
+    esac
+  done
+  [[ -z "$user" ]] && user=$(_gh_user)
+  [[ -z "$user" ]] && { echo '{"error":"failed to resolve GitHub user"}' >&2; exit 1; }
+  _validate_arg "user" "$user"
+
+  local projects
+  projects=$(gh project list --owner "$user" --format json \
+    -q '.projects[] | select(.closed == false) | {number, title}' 2>/dev/null) || true
+
+  if [[ -z "$projects" ]]; then
+    echo '[]'
+  else
+    echo "$projects" | jq -s '.'
+  fi
+}
+
+cmd_list_repos() {
+  local project="" user=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --project) project=$2; shift 2 ;;
+      --user) user=$2; shift 2 ;;
+      *) shift ;;
+    esac
+  done
+  if [[ "$project" != "none" && -n "$project" ]]; then
+    [[ -z "$user" ]] && user=$(_gh_user)
+    [[ -z "$user" ]] && { echo '{"error":"failed to resolve GitHub user"}' >&2; exit 1; }
+    _validate_arg "user" "$user"
+  fi
+
+  local items=()
+
+  if [[ "$project" == "none" || -z "$project" ]]; then
+    # All ghq repos under github.com
+    local repos
+    repos=$(ghq list | grep '^github\.com/' | sed 's|^github\.com/||' | sort)
+    if [[ -z "$repos" ]]; then
+      echo '[]'
+      return
+    fi
+    while IFS= read -r repo; do
+      local count=0
+      local ids=$(_repo_active_ids "$repo")
+      if [[ -n "$ids" ]]; then
+        count=$(echo "$ids" | wc -l | tr -d ' ')
+      fi
+      if _workspace_session_exists "$repo" main; then
+        count=$((count + 1))
+      fi
+      items+=("{\"ns_repo\":\"$repo\",\"active_count\":$count}")
+    done <<< "$repos"
+  else
+    _validate_arg "project" "$project"
+    # Repos from GitHub project, filtered by ghq
+    local all_repos
+    all_repos=$(gh api graphql -f query='
+      query($owner: String!, $num: Int!) {
+        user(login: $owner) {
+          projectV2(number: $num) {
+            repositories(first: 100) {
+              nodes { nameWithOwner }
+            }
+          }
+        }
+      }' -f owner="$user" -F num="$project" \
+      -q '.data.user.projectV2.repositories.nodes[].nameWithOwner' 2>/dev/null) || true
+
+    if [[ -z "$all_repos" ]]; then
+      echo '[]'
+      return
+    fi
+
+    local ghq_repos
+    ghq_repos=$(ghq list | grep '^github\.com/' | sed 's|^github\.com/||')
+
+    while IFS= read -r repo; do
+      if echo "$ghq_repos" | grep -qxF "$repo"; then
+        local count=0
+        local ids=$(_repo_active_ids "$repo")
+        if [[ -n "$ids" ]]; then
+          count=$(echo "$ids" | wc -l | tr -d ' ')
+        fi
+        if _workspace_session_exists "$repo" main; then
+          count=$((count + 1))
+        fi
+        items+=("{\"ns_repo\":\"$repo\",\"active_count\":$count}")
+      fi
+    done <<< "$all_repos"
+  fi
+
+  if [[ ${#items[@]} -eq 0 ]]; then
+    echo '[]'
+  else
+    printf '%s\n' "${items[@]}" | jq -s '.'
+  fi
+}
+
+cmd_list_issues() {
+  local ns_repo=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --repo) ns_repo=$2; shift 2 ;;
+      *) shift ;;
+    esac
+  done
+  [[ -z "$ns_repo" ]] && { echo '{"error":"--repo required"}' >&2; exit 1; }
+  _validate_arg "repo" "$ns_repo"
+
+  local items=()
+
+  # main entry
+  local main_active=false
+  _workspace_session_exists "$ns_repo" main && main_active=true
+  local main_dc=$(_devcontainer_state "$ns_repo" main)
+  items+=("{\"id\":\"main\",\"title\":\"main\",\"active\":$main_active,\"closed\":false,\"devcontainer\":\"$main_dc\"}")
+
+  # Collect active worktree IDs
+  declare -A active_ids
+  local wt_ids=$(_repo_active_ids "$ns_repo")
+  if [[ -n "$wt_ids" ]]; then
+    while IFS= read -r wt_id; do
+      active_ids[$wt_id]=1
+    done <<< "$wt_ids"
+  fi
+
+  # GitHub issues
+  local issues
+  issues=$(gh issue list --repo "$ns_repo" --limit 50 --json number,title \
+    -q '.[] | "\(.number)\t\(.title)"' 2>/dev/null) || true
+
+  if [[ -n "$issues" ]]; then
+    while IFS=$'\t' read -r num title; do
+      local is_active=false
+      if [[ -n "${active_ids[$num]:-}" ]]; then
+        is_active=true
+        unset "active_ids[$num]"
+      fi
+      local dc=$(_devcontainer_state "$ns_repo" "$num")
+      # Escape title for JSON
+      local escaped_title=$(echo "$title" | jq -Rs '.[:-1]')
+      items+=("{\"id\":\"$num\",\"title\":$escaped_title,\"active\":$is_active,\"closed\":false,\"devcontainer\":\"$dc\"}")
+    done <<< "$issues"
+  fi
+
+  # Orphaned worktrees (closed issues still active)
+  for orphan_id in "${(@k)active_ids}"; do
+    local orphan_title=$(gh issue view "$orphan_id" --repo "$ns_repo" --json title -q '.title' 2>/dev/null) || true
+    local escaped_title=$(echo "${orphan_title:-unknown}" | jq -Rs '.[:-1]')
+    local dc=$(_devcontainer_state "$ns_repo" "$orphan_id")
+    items+=("{\"id\":\"$orphan_id\",\"title\":$escaped_title,\"active\":true,\"closed\":true,\"devcontainer\":\"$dc\"}")
+  done
+
+  printf '%s\n' "${items[@]}" | jq -s '.'
+}
+
+cmd_list_workspaces() {
+  local items=()
+
+  # Main and worktree-based workspaces discovered from ghq.
+  for ghq_repo in $(ghq list -p | grep '/github\.com/'); do
+    local ns_repo=$(echo "$ghq_repo" | sed 's|.*/github\.com/||')
+    if _workspace_session_exists "$ns_repo" main; then
+      local dc=$(_devcontainer_state "$ns_repo" main)
+      items+=("{\"ns_repo\":\"$ns_repo\",\"id\":\"main\",\"title\":\"main\",\"active\":true,\"closed\":false,\"devcontainer\":\"$dc\"}")
+    fi
+
+    local wt_ids=$(_repo_active_ids "$ns_repo")
+    [[ -z "$wt_ids" ]] && continue
+
+    while IFS= read -r wt_id; do
+      local is_active=false
+      _workspace_session_exists "$ns_repo" "$wt_id" && is_active=true
+
+      local issue_title="" is_closed=false
+      local issue_info=$(gh issue view "$wt_id" --repo "$ns_repo" --json title,state \
+        -q '"\(.title)\t\(.state)"' 2>/dev/null) || true
+      if [[ -n "$issue_info" ]]; then
+        issue_title=${issue_info%%$'\t'*}
+        local state=${issue_info#*$'\t'}
+        [[ "$state" == "CLOSED" ]] && is_closed=true
+      fi
+
+      local escaped_title=$(echo "${issue_title:-unknown}" | jq -Rs '.[:-1]')
+      local dc=$(_devcontainer_state "$ns_repo" "$wt_id")
+      items+=("{\"ns_repo\":\"$ns_repo\",\"id\":\"$wt_id\",\"title\":$escaped_title,\"active\":$is_active,\"closed\":$is_closed,\"devcontainer\":\"$dc\"}")
+    done <<< "$wt_ids"
+  done
+
+  if [[ ${#items[@]} -eq 0 ]]; then
+    echo '[]'
+  else
+    printf '%s\n' "${items[@]}" | jq -s '.'
+  fi
+}
+
+cmd_list_devcontainer_configs() {
+  local ns_repo="" id=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --repo) ns_repo=$2; shift 2 ;;
+      --issue) id=$2; shift 2 ;;
+      *) shift ;;
+    esac
+  done
+  [[ -z "$ns_repo" ]] && { echo '{"error":"--repo required"}' >&2; exit 1; }
+  [[ -z "$id" ]] && { echo '{"error":"--issue required"}' >&2; exit 1; }
+  _validate_arg "repo" "$ns_repo"
+  _validate_arg "issue" "$id"
+
+  local ws=$(_workspace_path "$ns_repo" "$id")
+  local items=()
+
+  # Repo's primary config
+  if [[ -f "$ws/.devcontainer/devcontainer.json" ]]; then
+    items+=("{\"name\":\"repo\",\"path\":\"$ws/.devcontainer/devcontainer.json\",\"source\":\"repo\"}")
+  elif [[ -f "$ws/.devcontainer.json" ]]; then
+    items+=("{\"name\":\"repo\",\"path\":\"$ws/.devcontainer.json\",\"source\":\"repo\"}")
+  fi
+
+  # Repo's named configs in .devcontainer/<name>/devcontainer.json
+  if [[ -d "$ws/.devcontainer" ]]; then
+    local sub
+    for sub in "$ws/.devcontainer"/*/devcontainer.json(N); do
+      local name=${${sub%/devcontainer.json}:t}
+      items+=("{\"name\":\"repo-${name}\",\"path\":\"$sub\",\"source\":\"repo\"}")
+    done
+  fi
+
+  # Default fallback
+  local fb=$(_default_devcontainer_config)
+  if [[ -n "$fb" ]]; then
+    items+=("{\"name\":\"default\",\"path\":\"$fb\",\"source\":\"default\"}")
+  fi
+
+  if [[ ${#items[@]} -eq 0 ]]; then
+    echo '[]'
+  else
+    printf '%s\n' "${items[@]}" | jq -s '.'
+  fi
+}
+
+cmd_open() {
+  local ns_repo="" issue_id=""
+  local configs=()
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --repo) ns_repo=$2; shift 2 ;;
+      --issue) issue_id=$2; shift 2 ;;
+      --config) configs+=("$2"); shift 2 ;;
+      *) shift ;;
+    esac
+  done
+  [[ -z "$ns_repo" ]] && { echo '{"error":"--repo required"}' >&2; exit 1; }
+  [[ -z "$issue_id" ]] && { echo '{"error":"--issue required"}' >&2; exit 1; }
+  _validate_arg "repo" "$ns_repo"
+  _validate_arg "issue" "$issue_id"
+
+  local message=""
+  local session_name=""
+  if [[ "$issue_id" == "main" ]]; then
+    local ghq_path=$(_ghq_path "$ns_repo")
+
+    session_name=$(_ensure_workspace_session "$ns_repo" main "$ghq_path")
+    message="Opened ${ns_repo} (main) [$(_session_manager)]"
+  else
+    local branch="feature/${issue_id}"
+    local worktree_path="$HOME/worktrees/github.com/${ns_repo}/${issue_id}"
+    local ghq_path=$(_ghq_path "$ns_repo")
+
+    if [[ ! -d "$worktree_path" ]]; then
+      if git -C "$ghq_path" show-ref --verify --quiet "refs/heads/${branch}"; then
+        git -C "$ghq_path" worktree add --relative-paths "$worktree_path" "$branch" >/dev/null 2>&1 || {
+          echo "{\"error\":\"Failed to add worktree\"}" >&2
+          exit 1
+        }
+      else
+        git -C "$ghq_path" worktree add --relative-paths -b "$branch" "$worktree_path" >/dev/null 2>&1 || {
+          echo "{\"error\":\"Failed to create worktree\"}" >&2
+          exit 1
+        }
+      fi
+    fi
+
+    session_name=$(_ensure_workspace_session "$ns_repo" "$issue_id" "$worktree_path")
+    message="Opened ${ns_repo} #${issue_id} [$(_session_manager)]"
+  fi
+
+  if [[ ${#configs[@]} -gt 0 ]]; then
+    local cfg outcome
+    local results=()
+    local ws_for_open=$(_workspace_path "$ns_repo" "$issue_id")
+    local session_for_window
+    session_for_window=$session_name
+    for cfg in "${configs[@]}"; do
+      outcome=$(_devcontainer_up "$ns_repo" "$issue_id" "$cfg") || {
+        echo "{\"error\":\"devcontainer up failed for $cfg\"}" >&2
+        exit 1
+      }
+      local cname=$(_config_name "$ws_for_open" "$cfg")
+      results+=("${outcome}: ${cname}")
+      if [[ "$(_session_manager)" == "tmux" ]]; then
+        _add_devcontainer_window "$session_for_window" "$ns_repo" "$issue_id" "$cfg"
+      fi
+    done
+    local joined
+    joined=$(printf '%s, ' "${results[@]}")
+    joined=${joined%, }
+    message+=" + devcontainer(s) [${joined}]"
+  fi
+
+  local escaped_session escaped_path
+  escaped_session=$(printf '%s' "$session_name" | jq -Rs '.')
+  escaped_path=$(printf '%s' "$(_workspace_path "$ns_repo" "$issue_id")" | jq -Rs '.')
+  echo "{\"status\":\"ok\",\"message\":\"${message}\",\"session\":${escaped_session},\"path\":${escaped_path},\"manager\":\"$(_session_manager)\"}"
+}
+
+cmd_remove() {
+  local ns_repo="" target=""
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --repo) ns_repo=$2; shift 2 ;;
+      --target) target=$2; shift 2 ;;
+      *) shift ;;
+    esac
+  done
+  [[ -z "$ns_repo" ]] && { echo '{"error":"--repo required"}' >&2; exit 1; }
+  [[ -z "$target" ]] && { echo '{"error":"--target required"}' >&2; exit 1; }
+  _validate_arg "repo" "$ns_repo"
+  _validate_arg "target" "$target"
+
+  if [[ "$target" == "main" ]]; then
+    _remove_workspace_sessions "$ns_repo" main
+    _devcontainer_down "$ns_repo" main
+    echo "{\"status\":\"ok\",\"message\":\"Removed session: $ns_repo\"}"
+  else
+    local session_name=$(_session_name "$ns_repo" "$target")
+    local worktree_path="$HOME/worktrees/github.com/${ns_repo}/${target}"
+    local ghq_path=$(_ghq_path "$ns_repo")
+
+    _remove_workspace_sessions "$ns_repo" "$target"
+    _devcontainer_down "$ns_repo" "$target"
+    git -C "$ghq_path" worktree remove "$worktree_path" 2>/dev/null || true
+    echo "{\"status\":\"ok\",\"message\":\"Removed worktree and session: $session_name\"}"
+  fi
+}
+
+# --- Main dispatch ---
+
+subcmd=${1:-}
+shift 2>/dev/null || true
+
+case "$subcmd" in
+  list-projects)             cmd_list_projects "$@" ;;
+  list-repos)                cmd_list_repos "$@" ;;
+  list-issues)               cmd_list_issues "$@" ;;
+  list-workspaces)           cmd_list_workspaces "$@" ;;
+  list-devcontainer-configs) cmd_list_devcontainer_configs "$@" ;;
+  open)                      cmd_open "$@" ;;
+  remove)                    cmd_remove "$@" ;;
+  *)
+    echo '{"error":"Usage: wsm-core <list-projects|list-repos|list-issues|list-workspaces|list-devcontainer-configs|open|remove>"}' >&2
+    exit 1
+    ;;
+esac
