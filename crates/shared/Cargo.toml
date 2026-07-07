@@ -1,0 +1,8 @@
+# core と (将来の) client が共有する語彙。外部依存を持たない純粋なレイヤー。
+[package]
+name = "wsm-shared"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+[dependencies]

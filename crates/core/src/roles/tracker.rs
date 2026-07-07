@@ -2,8 +2,8 @@
 //! gh との会話 (引数列) は zsh 版と同一に保つ。契約テストのフェイクが
 //! この会話を前提にしているため。
 
-use crate::domain::RepoRef;
-use crate::exec;
+use wsm_shared::domains::RepoRef;
+use crate::infra::exec;
 use serde_json::Value;
 
 const OPEN_PROJECTS_FILTER: &str = ".projects[] | select(.closed == false) | {number, title}";

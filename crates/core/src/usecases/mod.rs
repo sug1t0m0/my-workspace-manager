@@ -1,37 +1,31 @@
-//! オーケストレーション層: ロールを合成してサブコマンドを実装する。
+//! Usecase 層: ロールを合成して JSON API のユースケースを実装する。
 //! ロール間の依存の順序 (worktree → session → devcontainer) と
 //! 合成ビュー (active / 孤児 worktree) はここだけが知っている。
+//! 入力はドメインの型で受け取る (引数解釈は presentations の責務)。
 
-use crate::domain::{self, RepoRef, WorkspaceId};
+use crate::infra::settings;
 use crate::roles::{devcontainer, repostore, session, tracker, worktree};
-use crate::settings;
 use serde_json::{json, Value};
 use std::collections::HashSet;
 use std::path::Path;
+use wsm_shared::domains::{self as domain, RepoRef, WorkspaceId};
 
 pub type CmdResult = Result<Value, String>;
 
-pub fn list_projects(args: &[String]) -> CmdResult {
-    let user = match flag_value(args, "--user") {
-        Some(user) => user,
-        None => tracker::resolve_user().ok_or("failed to resolve GitHub user")?,
-    };
-    let user = validated("user", user, domain::is_valid_user)?;
+/// user は未指定なら Tracker で自己解決する (解決した値も検証する)。
+pub fn list_projects(user: Option<String>) -> CmdResult {
+    let user = resolved_user(user)?;
     Ok(Value::Array(tracker::open_projects(&user)))
 }
 
-pub fn list_repos(home: &Path, args: &[String]) -> CmdResult {
-    let project = flag_value(args, "--project").unwrap_or_default();
+pub fn list_repos(home: &Path, project: Option<String>, user: Option<String>) -> CmdResult {
+    let project = project.unwrap_or_default();
 
     let repos: Vec<RepoRef> = if project.is_empty() || project == "none" {
         repostore::list()
     } else {
         // Tracker (Project 所属) と RepoStore (ローカルにある) の交差
-        let user = match flag_value(args, "--user") {
-            Some(user) => user,
-            None => tracker::resolve_user().ok_or("failed to resolve GitHub user")?,
-        };
-        let user = validated("user", user, domain::is_valid_user)?;
+        let user = resolved_user(user)?;
         let project = validated("project", project, domain::is_valid_project)?;
         let local: HashSet<RepoRef> = repostore::list().into_iter().collect();
         tracker::project_repos(&user, &project)
@@ -83,19 +77,17 @@ pub fn list_workspaces(home: &Path) -> CmdResult {
     Ok(Value::Array(entries))
 }
 
-pub fn list_issues(home: &Path, args: &[String]) -> CmdResult {
-    let repo = required_repo(args)?;
-
+pub fn list_issues(home: &Path, repo: &RepoRef) -> CmdResult {
     let main_entry = issue_entry(
         "main",
         "main",
-        session::workspace_session_exists(&repo, &WorkspaceId::Main),
+        session::workspace_session_exists(repo, &WorkspaceId::Main),
         false,
-        devcontainer::state(&repo, "main"),
+        devcontainer::state(repo, "main"),
     );
 
-    let active_ids = active_issue_ids(home, &repo);
-    let open_issues = tracker::open_issues(&repo);
+    let active_ids = active_issue_ids(home, repo);
+    let open_issues = tracker::open_issues(repo);
     let open_ids: HashSet<&str> = open_issues.iter().map(|(id, _)| id.as_str()).collect();
 
     let issue_entries = open_issues.iter().map(|(id, title)| {
@@ -104,7 +96,7 @@ pub fn list_issues(home: &Path, args: &[String]) -> CmdResult {
             title,
             active_ids.iter().any(|active| active == id),
             false,
-            devcontainer::state(&repo, id),
+            devcontainer::state(repo, id),
         )
     });
 
@@ -113,8 +105,8 @@ pub fn list_issues(home: &Path, args: &[String]) -> CmdResult {
         .iter()
         .filter(|id| !open_ids.contains(id.as_str()))
         .map(|id| {
-            let title = tracker::issue_title(&repo, id).unwrap_or_else(|| "unknown".to_owned());
-            issue_entry(id, &title, true, true, devcontainer::state(&repo, id))
+            let title = tracker::issue_title(repo, id).unwrap_or_else(|| "unknown".to_owned());
+            issue_entry(id, &title, true, true, devcontainer::state(repo, id))
         });
 
     Ok(Value::Array(
@@ -122,10 +114,8 @@ pub fn list_issues(home: &Path, args: &[String]) -> CmdResult {
     ))
 }
 
-pub fn list_devcontainer_configs(home: &Path, args: &[String]) -> CmdResult {
-    let repo = required_repo(args)?;
-    let issue = required(args, "--issue", "issue", domain::is_valid_issue)?;
-    let workspace = domain::workspace_path(home, &repo, &WorkspaceId::parse(&issue));
+pub fn list_devcontainer_configs(home: &Path, repo: &RepoRef, id: &WorkspaceId) -> CmdResult {
+    let workspace = domain::workspace_path(home, repo, id);
 
     let repo_entries = devcontainer::repo_configs(&workspace).into_iter().map(|(name, path)| {
         json!({ "name": name, "path": path.to_string_lossy(), "source": "repo" })
@@ -136,33 +126,28 @@ pub fn list_devcontainer_configs(home: &Path, args: &[String]) -> CmdResult {
     Ok(Value::Array(repo_entries.chain(fallback_entry).collect()))
 }
 
-pub fn open(home: &Path, args: &[String]) -> CmdResult {
-    let repo = required_repo(args)?;
-    let issue = required(args, "--issue", "issue", domain::is_valid_issue)?;
-    let configs = flag_values(args, "--config");
-
-    let id = WorkspaceId::parse(&issue);
+pub fn open(home: &Path, repo: &RepoRef, id: &WorkspaceId, configs: &[String]) -> CmdResult {
     let manager = settings::session_manager(home)?;
-    let workspace = domain::workspace_path(home, &repo, &id);
+    let workspace = domain::workspace_path(home, repo, id);
 
     // 依存の順序: worktree (Issue のみ) → session → devcontainer
-    if let WorkspaceId::Issue(n) = &id {
+    if let WorkspaceId::Issue(n) = id {
         if !workspace.is_dir() {
-            worktree::add(&domain::ghq_path(home, &repo), &domain::branch_name(n), &workspace)?;
+            worktree::add(&domain::ghq_path(home, repo), &domain::branch_name(n), &workspace)?;
         }
     }
-    let session = session::ensure(manager, &repo, &id, &workspace, home)?;
+    let session = session::ensure(manager, repo, id, &workspace, home)?;
 
     let outcomes = configs
         .iter()
         .map(|cfg| {
             let config_path = Path::new(cfg);
             let cname = devcontainer::config_name(&workspace, config_path);
-            let outcome = devcontainer::up(home, &repo, &id, &workspace, config_path, &cname)
+            let outcome = devcontainer::up(home, repo, id, &workspace, config_path, &cname)
                 .map_err(|_| format!("devcontainer up failed for {cfg}"))?;
             // 配線: DevContainer が exec コマンドを組み立て、SessionManager が
             // 🐳 ウィンドウを追加する (dedup キーはコンテナ ID)
-            if let Some((cid, command)) = devcontainer::exec_command(&repo, &id, &cname) {
+            if let Some((cid, command)) = devcontainer::exec_command(repo, id, &cname) {
                 session::add_window(manager, &session, "🐳", &command, &cid);
             }
             Ok(format!("{}: {cname}", outcome.label()))
@@ -171,7 +156,7 @@ pub fn open(home: &Path, args: &[String]) -> CmdResult {
 
     // トラッカー固有の記法 (# 等) は使わない: <ns_repo> <id> のスペース区切り
     let ns_repo = repo.ns_repo();
-    let base_message = match &id {
+    let base_message = match id {
         WorkspaceId::Main => format!("Opened {ns_repo} (main) [{}]", manager.name()),
         WorkspaceId::Issue(n) => format!("Opened {ns_repo} {n} [{}]", manager.name()),
     };
@@ -188,33 +173,26 @@ pub fn open(home: &Path, args: &[String]) -> CmdResult {
     }))
 }
 
-pub fn remove(home: &Path, args: &[String]) -> CmdResult {
-    let repo = required_repo(args)?;
-    let issue = required(args, "--issue", "issue", domain::is_valid_issue)?;
-    let id = WorkspaceId::parse(&issue);
-
+pub fn remove(home: &Path, repo: &RepoRef, id: &WorkspaceId) -> CmdResult {
     // herdr のセッションは Issue workspace の器なので、残存中は main を消せない
-    if id == WorkspaceId::Main && session::herdr_blocks_main_removal(&repo) {
+    if *id == WorkspaceId::Main && session::herdr_blocks_main_removal(repo) {
         return Err(format!(
             "herdr session has open issue workspaces: {}",
-            domain::herdr_session_name(&repo)
+            domain::herdr_session_name(repo)
         ));
     }
 
     // 破棄は open の逆順: session → devcontainer → worktree
-    session::remove_workspace_sessions(&repo, &id);
-    devcontainer::down(&repo, id.as_str());
+    session::remove_workspace_sessions(repo, id);
+    devcontainer::down(repo, id.as_str());
 
-    match &id {
+    match id {
         WorkspaceId::Main => Ok(json!({
             "status": "ok",
             "message": format!("Removed session: {}", repo.ns_repo()),
         })),
         WorkspaceId::Issue(issue) => {
-            worktree::remove(
-                &domain::ghq_path(home, &repo),
-                &domain::workspace_path(home, &repo, &id),
-            );
+            worktree::remove(&domain::ghq_path(home, repo), &domain::workspace_path(home, repo, id));
             // トラッカー固有の記法 (# 等) は使わない: <ns_repo> <id> のスペース区切り
             Ok(json!({
                 "status": "ok",
@@ -258,39 +236,13 @@ fn issue_entry(id: &str, title: &str, active: bool, closed: bool, dc: &str) -> V
     json!({ "id": id, "title": title, "active": active, "closed": closed, "devcontainer": dc })
 }
 
-/// フラグの値を返す。同名フラグの重複は後勝ち (zsh 版のループ上書きと同じ契約)。
-/// 空文字の値は未指定と同じ扱い (zsh 版の [[ -z ]] と同じ契約)。
-fn flag_value(args: &[String], flag: &str) -> Option<String> {
-    args.iter()
-        .rposition(|a| a == flag)
-        .and_then(|i| args.get(i + 1))
-        .filter(|v| !v.is_empty())
-        .cloned()
-}
-
-fn flag_values(args: &[String], flag: &str) -> Vec<String> {
-    args.iter()
-        .enumerate()
-        .filter(|(_, a)| *a == flag)
-        .filter_map(|(i, _)| args.get(i + 1).cloned())
-        .collect()
-}
-
-/// --repo をパースして RepoRef を得る (パース = 検証)。
-fn required_repo(args: &[String]) -> Result<RepoRef, String> {
-    let value = flag_value(args, "--repo").ok_or("--repo required")?;
-    RepoRef::parse(&value).ok_or_else(|| format!("Invalid repo: {value}"))
-}
-
-fn required(
-    args: &[String],
-    flag: &str,
-    name: &str,
-    valid: fn(&str) -> bool,
-) -> Result<String, String> {
-    flag_value(args, flag)
-        .ok_or_else(|| format!("{flag} required"))
-        .and_then(|value| validated(name, value, valid))
+/// --user 未指定時の自己解決。解決した値にも同じ検証をかける。
+fn resolved_user(user: Option<String>) -> Result<String, String> {
+    let user = match user {
+        Some(user) => user,
+        None => tracker::resolve_user().ok_or("failed to resolve GitHub user")?,
+    };
+    validated("user", user, domain::is_valid_user)
 }
 
 fn validated(name: &str, value: String, valid: fn(&str) -> bool) -> Result<String, String> {

@@ -201,7 +201,12 @@ version = "0.1.0"
 dependencies = [
  "serde_json",
  "tempfile",
+ "wsm-shared",
 ]
+
+[[package]]
+name = "wsm-shared"
+version = "0.1.0"
 
 [[package]]
 name = "zmij"

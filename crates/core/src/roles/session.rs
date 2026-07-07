@@ -8,9 +8,9 @@
 //!
 //! 名前・ラベルの導出はドメイン層の関数を使う (実装側に導出規則を持たせない)。
 
-use crate::domain::{self, RepoRef, WorkspaceId};
-use crate::exec;
-use crate::settings::SessionManager;
+use wsm_shared::domains::{self as domain, RepoRef, WorkspaceId};
+use crate::infra::exec;
+use crate::infra::settings::SessionManager;
 use std::path::Path;
 
 fn tmux_exists(session: &str) -> bool {

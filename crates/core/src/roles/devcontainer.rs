@@ -1,8 +1,8 @@
 //! DevContainer ロールの devcontainers/cli + docker 実装。
 //! コンテナの同一性は Docker ラベル (wsm.ns-repo / wsm.issue-id / wsm.config)。
 
-use crate::domain::{RepoRef, WorkspaceId};
-use crate::exec;
+use wsm_shared::domains::{RepoRef, WorkspaceId};
+use crate::infra::exec;
 use std::path::{Path, PathBuf};
 
 /// up の冪等契約: 実行前の状態に応じて結果が決まる。

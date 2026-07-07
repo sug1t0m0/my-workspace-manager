@@ -2,8 +2,8 @@
 //! github.com 固定は現行実装の制約 (docs/wsm.md の拡張点を参照)。
 //! 出力は RepoRef にパースし、形の不正な行は捨てる。
 
-use crate::domain::RepoRef;
-use crate::exec;
+use wsm_shared::domains::RepoRef;
+use crate::infra::exec;
 
 /// ローカルにあるリポジトリの一覧 (`ghq list`、ns_repo の文字列順)。
 pub fn list() -> Vec<RepoRef> {

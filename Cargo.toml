@@ -1,6 +1,6 @@
 [workspace]
 resolver = "3"
-members = ["crates/wsm-core"]
+members = ["crates/core", "crates/shared"]
 
 [workspace.package]
 edition = "2024"

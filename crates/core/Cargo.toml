@@ -8,6 +8,7 @@ license.workspace = true
 
 [dependencies]
 serde_json = "1"
+wsm-shared = { path = "../shared" }
 
 [dev-dependencies]
 serde_json = "1"

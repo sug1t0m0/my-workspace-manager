@@ -1,7 +1,7 @@
 //! Worktree ロールの git worktree 実装。Issue Workspace の作業ツリーを扱う
 //! (main はクローン本体をそのまま使うため、このロールは関与しない)。
 
-use crate::exec;
+use crate::infra::exec;
 use std::path::Path;
 
 /// worktree を作る。ブランチが既存ならそれを使い、なければ作る。
