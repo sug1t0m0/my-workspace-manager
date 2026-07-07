@@ -129,6 +129,7 @@ pub fn ensure(
     repo: &RepoRef,
     id: &WorkspaceId,
     cwd: &Path,
+    home: &Path,
 ) -> Result<String, String> {
     match manager {
         SessionManager::Tmux => {
@@ -145,25 +146,48 @@ pub fn ensure(
             exec::which("herdr").ok_or("herdr not installed")?;
             let session = domain::session_name(repo, &WorkspaceId::Main);
             herdr_ensure_running(&session)?;
-            // main も workspace を保証する (ラベル = リポジトリ名)。ヘッドレス
-            // 起動直後のセッションは workspace ゼロで、アタッチ時の自動作成に
-            // 任せると cwd がリポジトリにならないため
-            let label = domain::herdr_workspace_label(repo, id);
             let sock = herdr_socket_path(&session)
                 .ok_or_else(|| format!("failed to resolve herdr socket: {session}"))?;
             let env = [("HERDR_SOCKET_PATH", sock.as_str())];
-            match herdr_workspace_id(&sock, &label) {
-                Some(wid) => {
-                    exec::run_ignoring_failure_env("herdr", &["workspace", "focus", &wid], &env)
-                }
-                None => {
-                    let cwd = cwd.to_string_lossy();
+
+            // main の workspace (ラベル = リポジトリ名) は Issue open 時も常に
+            // 保証する。ヘッドレス起動直後のセッションは workspace ゼロで、
+            // アタッチ時の自動作成に任せると cwd がリポジトリにならないため。
+            // Issue open 時はフォーカスを奪わない
+            let opening_main = matches!(id, WorkspaceId::Main);
+            let main_label = domain::herdr_workspace_label(repo, &WorkspaceId::Main);
+            match (herdr_workspace_id(&sock, &main_label), opening_main) {
+                (None, _) => {
+                    let ghq = domain::ghq_path(home, repo);
+                    let ghq = ghq.to_string_lossy();
+                    let focus_flag = if opening_main { "--focus" } else { "--no-focus" };
                     exec::stdout_if_ok_env(
                         "herdr",
-                        &["workspace", "create", "--cwd", &cwd, "--label", &label, "--focus"],
+                        &["workspace", "create", "--cwd", &ghq, "--label", &main_label, focus_flag],
                         &env,
                     )
                     .ok_or("failed to create herdr workspace")?;
+                }
+                (Some(wid), true) => {
+                    exec::run_ignoring_failure_env("herdr", &["workspace", "focus", &wid], &env)
+                }
+                (Some(_), false) => {}
+            }
+
+            if let WorkspaceId::Issue(issue) = id {
+                match herdr_workspace_id(&sock, issue) {
+                    Some(wid) => {
+                        exec::run_ignoring_failure_env("herdr", &["workspace", "focus", &wid], &env)
+                    }
+                    None => {
+                        let cwd = cwd.to_string_lossy();
+                        exec::stdout_if_ok_env(
+                            "herdr",
+                            &["workspace", "create", "--cwd", &cwd, "--label", issue, "--focus"],
+                            &env,
+                        )
+                        .ok_or("failed to create herdr workspace")?;
+                    }
                 }
             }
             Ok(session)

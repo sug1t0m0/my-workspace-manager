@@ -606,7 +606,8 @@ const HERDR_CONFIG: &str = "session_manager = \"herdr\"\n";
 
 #[test]
 fn open_issue_with_herdr_creates_workspace_in_repo_session() {
-    // Arrange: リポジトリセッションは起動済み、Issue 42 の workspace はまだない
+    // Arrange: リポジトリセッションは起動済みで main workspace もある。
+    // Issue 42 の workspace はまだない
     let env = TestEnv::new();
     let home = env.home_str();
     let sock = herdr_sock(&home);
@@ -614,7 +615,7 @@ fn open_issue_with_herdr_creates_workspace_in_repo_session() {
         .stub("^herdr session list --json$", &herdr_sessions_json(&home, true))
         .stub(
             &format!("^HERDR_SOCKET_PATH={sock} herdr workspace list$"),
-            &herdr_workspaces_json(&[("w1", "my-workspace-manager")]),
+            &herdr_workspaces_json(&[("w1", "repo")]),
         )
         .stub(&format!("^HERDR_SOCKET_PATH={sock} herdr workspace create "), "")
         .stub("worktree add --relative-paths -b feature/42 ", "");
@@ -622,7 +623,8 @@ fn open_issue_with_herdr_creates_workspace_in_repo_session() {
     // Act
     let out = env.run(&["open", "--repo", "owner/repo", "--issue", "42"]);
 
-    // Assert: セッションはリポジトリ単位、workspace がラベル 42 で作られる
+    // Assert: セッションはリポジトリ単位、workspace がラベル 42 で作られる。
+    // main workspace は既存なので作り直さない
     assert_eq!(out.status, Some(0));
     let v = out.stdout_json();
     assert_eq!(v["session"], "owner.repo");
@@ -633,6 +635,10 @@ fn open_issue_with_herdr_creates_workspace_in_repo_session() {
             "HERDR_SOCKET_PATH={sock} herdr workspace create --cwd {home}/worktrees/github.com/owner/repo/42 --label 42 --focus"
         )),
         "issue workspace must be created in the repo session: {invocations:?}"
+    );
+    assert!(
+        !invocations.iter().any(|l| l.contains("--label repo ")),
+        "existing main workspace must not be recreated: {invocations:?}"
     );
     assert!(
         !invocations.iter().any(|l| l.starts_with("tmux new-session")),
@@ -651,7 +657,7 @@ fn open_issue_with_herdr_focuses_existing_workspace() {
         .stub("^herdr session list --json$", &herdr_sessions_json(&home, true))
         .stub(
             &format!("^HERDR_SOCKET_PATH={sock} herdr workspace list$"),
-            &herdr_workspaces_json(&[("w1", "my-workspace-manager"), ("w7", "42")]),
+            &herdr_workspaces_json(&[("w1", "repo"), ("w7", "42")]),
         )
         .stub(&format!("^HERDR_SOCKET_PATH={sock} herdr workspace focus "), "");
 
@@ -687,7 +693,7 @@ fn open_issue_with_herdr_starts_session_headlessly_when_not_running() {
     // Act
     let out = env.run(&["open", "--repo", "owner/repo", "--issue", "42"]);
 
-    // Assert: ヘッドレス起動してから workspace を作る
+    // Assert: ヘッドレス起動 → main workspace (フォーカスなし) → Issue workspace
     assert_eq!(out.status, Some(0));
     let invocations = env.invocations();
     assert!(
@@ -695,8 +701,16 @@ fn open_issue_with_herdr_starts_session_headlessly_when_not_running() {
         "repo session must be started headlessly: {invocations:?}"
     );
     assert!(
-        invocations.iter().any(|l| l.contains("herdr workspace create ")),
-        "issue workspace must be created after startup: {invocations:?}"
+        invocations.contains(&format!(
+            "HERDR_SOCKET_PATH={sock} herdr workspace create --cwd {home}/ghq/github.com/owner/repo --label repo --no-focus"
+        )),
+        "main workspace must be created without stealing focus: {invocations:?}"
+    );
+    assert!(
+        invocations.contains(&format!(
+            "HERDR_SOCKET_PATH={sock} herdr workspace create --cwd {home}/worktrees/github.com/owner/repo/42 --label 42 --focus"
+        )),
+        "issue workspace must be created and focused: {invocations:?}"
     );
 }
 

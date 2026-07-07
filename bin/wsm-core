@@ -224,24 +224,34 @@ _ensure_workspace_session() {
       }
       local session=$(_session_name "$ns_repo" main)
       _herdr_ensure_running "$session"
-      # main も workspace を保証する (ラベル = リポジトリ名)。ヘッドレス起動
-      # 直後のセッションは workspace ゼロで、アタッチ時の自動作成に任せると
-      # cwd がリポジトリにならないため
-      local label
-      if [[ "$id" == "main" ]]; then
-        label=${ns_repo##*/}
-      else
-        label=$id
-      fi
       local sock=$(_herdr_socket_path "$session")
-      local wid=$(_herdr_workspace_id "$session" "$label")
-      if [[ -n "$wid" ]]; then
-        HERDR_SOCKET_PATH=$sock herdr workspace focus "$wid" >/dev/null 2>&1 || true
-      else
-        HERDR_SOCKET_PATH=$sock herdr workspace create --cwd "$cwd" --label "$label" --focus >/dev/null 2>&1 || {
+
+      # main の workspace (ラベル = リポジトリ名) は Issue open 時も常に保証する。
+      # ヘッドレス起動直後のセッションは workspace ゼロで、アタッチ時の自動作成に
+      # 任せると cwd がリポジトリにならないため。Issue open 時はフォーカスを奪わない
+      local main_label=${ns_repo##*/}
+      local main_wid=$(_herdr_workspace_id "$session" "$main_label")
+      if [[ -z "$main_wid" ]]; then
+        local focus_flag=--no-focus
+        [[ "$id" == "main" ]] && focus_flag=--focus
+        HERDR_SOCKET_PATH=$sock herdr workspace create --cwd "$(_ghq_path "$ns_repo")" --label "$main_label" "$focus_flag" >/dev/null 2>&1 || {
           echo '{"error":"failed to create herdr workspace"}' >&2
           exit 1
         }
+      elif [[ "$id" == "main" ]]; then
+        HERDR_SOCKET_PATH=$sock herdr workspace focus "$main_wid" >/dev/null 2>&1 || true
+      fi
+
+      if [[ "$id" != "main" ]]; then
+        local wid=$(_herdr_workspace_id "$session" "$id")
+        if [[ -n "$wid" ]]; then
+          HERDR_SOCKET_PATH=$sock herdr workspace focus "$wid" >/dev/null 2>&1 || true
+        else
+          HERDR_SOCKET_PATH=$sock herdr workspace create --cwd "$cwd" --label "$id" --focus >/dev/null 2>&1 || {
+            echo '{"error":"failed to create herdr workspace"}' >&2
+            exit 1
+          }
+        fi
       fi
       echo "$session"
       ;;

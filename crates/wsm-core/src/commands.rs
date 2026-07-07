@@ -151,7 +151,7 @@ pub fn open(home: &Path, args: &[String]) -> CmdResult {
             worktree::add(&domain::ghq_path(home, &repo), &domain::branch_name(n), &workspace)?;
         }
     }
-    let session = session::ensure(manager, &repo, &id, &workspace)?;
+    let session = session::ensure(manager, &repo, &id, &workspace, home)?;
 
     let outcomes = configs
         .iter()
