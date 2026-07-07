@@ -1,0 +1,15 @@
+# Rust 版 wsm-server。zsh 版 (bin/wsm-server) と JSON API 互換で、完成まで並存する。
+# ビルド成果物は target/debug/wsm-server に出るため bin/ とは衝突しない。
+[package]
+name = "wsm-server"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde_json = "1"
+wsm-shared = { path = "../shared" }
+
+[dev-dependencies]
+serde_json = "1"
+tempfile = "3"

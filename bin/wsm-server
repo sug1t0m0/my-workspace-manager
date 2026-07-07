@@ -1,5 +1,5 @@
 #!/usr/bin/env zsh
-# wsm-core: Workspace Manager core (JSON API)
+# wsm-server: Workspace Manager core (JSON API)
 # Host-side logic for workspace management. Called directly on macOS
 # or via SSH from DevContainer (wsm-client).
 
@@ -930,7 +930,7 @@ case "$subcmd" in
   open)                      cmd_open "$@" ;;
   remove)                    cmd_remove "$@" ;;
   *)
-    echo '{"error":"Usage: wsm-core <list-projects|list-repos|list-issues|list-workspaces|list-devcontainer-configs|open|remove>"}' >&2
+    echo '{"error":"Usage: wsm-server <list-projects|list-repos|list-issues|list-workspaces|list-devcontainer-configs|open|remove>"}' >&2
     exit 1
     ;;
 esac

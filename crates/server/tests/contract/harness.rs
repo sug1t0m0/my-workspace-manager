@@ -1,7 +1,7 @@
 // 契約テストのハーネス。
 //
-// テスト対象は既定でビルドした Rust 版バイナリ、環境変数 WSM_CORE_BIN で
-// zsh 版 (bin/wsm-core) 等に差し替えられる。外部コマンド (gh, ghq, git,
+// テスト対象は既定でビルドした Rust 版バイナリ、環境変数 WSM_SERVER_BIN で
+// zsh 版 (bin/wsm-server) 等に差し替えられる。外部コマンド (gh, ghq, git,
 // tmux, herdr, docker, devcontainer) は PATH 先頭のフェイクに差し替え、
 // テストごとの一時 HOME と合わせて完全に隔離する。
 //
@@ -69,10 +69,10 @@ impl CoreOutput {
     }
 }
 
-fn core_bin() -> PathBuf {
-    std::env::var_os("WSM_CORE_BIN")
+fn server_bin() -> PathBuf {
+    std::env::var_os("WSM_SERVER_BIN")
         .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_wsm-core")))
+        .unwrap_or_else(|| PathBuf::from(env!("CARGO_BIN_EXE_wsm-server")))
 }
 
 impl TestEnv {
@@ -112,14 +112,14 @@ impl TestEnv {
         self
     }
 
-    /// wsm-core を隔離環境で実行する。
+    /// wsm-server を隔離環境で実行する。
     pub fn run(&self, args: &[&str]) -> CoreOutput {
         let path = format!(
             "{}:{}",
             self.fakes_dir().display(),
             std::env::var("PATH").unwrap_or_default()
         );
-        let output = Command::new(core_bin())
+        let output = Command::new(server_bin())
             .args(args)
             .env("HOME", self.home())
             .env("PATH", path)
@@ -135,7 +135,7 @@ impl TestEnv {
             .env_remove("HERDR_TAB_ID")
             .env_remove("HERDR_WORKSPACE_ID")
             .output()
-            .expect("run wsm-core");
+            .expect("run wsm-server");
         CoreOutput {
             status: output.status.code(),
             stdout: String::from_utf8_lossy(&output.stdout).into_owned(),

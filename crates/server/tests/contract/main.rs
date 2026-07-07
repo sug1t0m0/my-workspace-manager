@@ -1,7 +1,7 @@
-// wsm-core の JSON API 契約テスト (docs/wsm.md が仕様)。
+// wsm-server の JSON API 契約テスト (docs/wsm.md が仕様)。
 //
 // 既定ではビルドした Rust 版を検証する。zsh 版 (リファレンス実装) に対して
-// 実行するには: WSM_CORE_BIN=$PWD/bin/wsm-core cargo test --test contract
+// 実行するには: WSM_SERVER_BIN=$PWD/bin/wsm-server cargo test --test contract
 //
 // JSON の比較は意味比較 (パース後の等価判定)。整形の差は契約に含めない。
 
@@ -10,7 +10,7 @@ mod harness;
 use harness::TestEnv;
 use serde_json::json;
 
-const USAGE_ERROR: &str = "Usage: wsm-core <list-projects|list-repos|list-issues|list-workspaces|list-devcontainer-configs|open|remove>";
+const USAGE_ERROR: &str = "Usage: wsm-server <list-projects|list-repos|list-issues|list-workspaces|list-devcontainer-configs|open|remove>";
 
 // --- ディスパッチ ---
 

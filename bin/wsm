@@ -1,16 +1,16 @@
 #!/usr/bin/env zsh
 # wsm: Workspace Manager UI
 # fzf による対話的選択・表示整形と、ホストでのターミナル連携 (Terminal アダプタ)
-# を担う。状態の照会・変更はすべて wsm-core (JSON API) に委譲する。
-# ホスト・DevContainer 共通の単一実装で、wsm-core への到達方法 (transport)
+# を担う。状態の照会・変更はすべて wsm-server (JSON API) に委譲する。
+# ホスト・DevContainer 共通の単一実装で、wsm-server への到達方法 (transport)
 # だけが実行環境で変わる。
 
 set -euo pipefail
 
 # --- Transport ---
-# local: wsm-core が PATH にある環境 (ホスト) で直接実行する
-# ssh:   ホストの wsm-core を SSH 越しに呼ぶ (DevContainer)
-# WSM_TRANSPORT で明示指定がなければ wsm-core の有無で自動判別する。
+# local: wsm-server が PATH にある環境 (ホスト) で直接実行する
+# ssh:   ホストの wsm-server を SSH 越しに呼ぶ (DevContainer)
+# WSM_TRANSPORT で明示指定がなければ wsm-server の有無で自動判別する。
 
 WSM_HOST="${WSM_HOST:-host.docker.internal}"
 HOST_USER="${HOST_USER:-}"
@@ -18,20 +18,20 @@ HOST_SSH_KEY="${HOST_SSH_KEY:-devcontainer}"
 SSH_OPTS=(-F /dev/null -o StrictHostKeyChecking=no -o LogLevel=ERROR -o IdentityFile=~/.ssh/"$HOST_SSH_KEY")
 
 if [[ -z "${WSM_TRANSPORT:-}" ]]; then
-  if command -v wsm-core >/dev/null 2>&1; then
+  if command -v wsm-server >/dev/null 2>&1; then
     WSM_TRANSPORT=local
   else
     WSM_TRANSPORT=ssh
   fi
 fi
 
-_core() {
+_server() {
   case "$WSM_TRANSPORT" in
     local)
-      wsm-core "$@"
+      wsm-server "$@"
       ;;
     ssh)
-      local cmd="wsm-core"
+      local cmd="wsm-server"
       local arg
       for arg in "$@"; do
         cmd+=" $(printf '%q' "$arg")"
@@ -45,7 +45,7 @@ _core() {
   esac
 }
 
-# WSM_SESSION_MANAGER が SSH 越しの wsm-core には伝わらないことの注意喚起
+# WSM_SESSION_MANAGER が SSH 越しの wsm-server には伝わらないことの注意喚起
 _warn_manager_over_ssh() {
   echo "Warning: -m/--manager は SSH 経由では反映されません (ホスト側の既定を使用)" >&2
 }
@@ -155,7 +155,7 @@ _dc_indicator() {
 _pick_project() {
   local TAB=$'\t'
 
-  local json=$(_core list-projects)
+  local json=$(_server list-projects)
   local items=()
 
   local projects=$(printf '%s\n' "$json" | jq -r '.[] | "\(.number)\t\(.title)"')
@@ -179,7 +179,7 @@ _pick_repo() {
   local project_num=$1
   local TAB=$'\t'
 
-  local json=$(_core list-repos --project "$project_num")
+  local json=$(_server list-repos --project "$project_num")
   local count=$(printf '%s\n' "$json" | jq 'length')
 
   if [[ "$count" -eq 0 ]]; then
@@ -208,7 +208,7 @@ _pick_issue() {
   local ns_repo=$1
   local TAB=$'\t'
 
-  local json=$(_core list-issues --repo "$ns_repo")
+  local json=$(_server list-issues --repo "$ns_repo")
   local items=()
 
   while IFS=$'\t' read -r id title active closed dc; do
@@ -242,7 +242,7 @@ _pick_devcontainer() {
   local ns_repo=$1 id=$2
   local TAB=$'\t'
 
-  local json=$(_core list-devcontainer-configs --repo "$ns_repo" --issue "$id")
+  local json=$(_server list-devcontainer-configs --repo "$ns_repo" --issue "$id")
   local count=$(printf '%s\n' "$json" | jq 'length')
 
   if [[ "$count" -eq 0 ]]; then
@@ -273,7 +273,7 @@ _pick_devcontainer() {
 # wsm rm 用: 全リポジトリの既存ワークスペースから選択
 _pick_rm() {
   local TAB=$'\t'
-  local json=$(_core list-workspaces)
+  local json=$(_server list-workspaces)
   local count=$(printf '%s\n' "$json" | jq 'length')
 
   if [[ "$count" -eq 0 ]]; then
@@ -310,7 +310,7 @@ _pick_rm() {
 
 # wsm ls: 全リポジトリの既存ワークスペースを一覧表示
 _do_ls() {
-  local json=$(_core list-workspaces)
+  local json=$(_server list-workspaces)
   local count=$(printf '%s\n' "$json" | jq 'length')
 
   if [[ "$count" -eq 0 ]]; then
@@ -408,7 +408,7 @@ case "$cmd" in
       fi
     fi
 
-    result=$(_core open --repo "$ns_repo" --issue "$issue_id" "${open_args[@]}")
+    result=$(_server open --repo "$ns_repo" --issue "$issue_id" "${open_args[@]}")
     printf '%s\n' "$result" | jq -r '.message // .error'
     [[ $(printf '%s\n' "$result" | jq -r '.status // empty') == "ok" ]] || exit 1
 
@@ -441,7 +441,7 @@ case "$cmd" in
       target_id=${selected#*$'\t'}
     fi
 
-    result=$(_core remove --repo "$ns_repo" --issue "$target_id")
+    result=$(_server remove --repo "$ns_repo" --issue "$target_id")
     printf '%s\n' "$result" | jq -r '.message // .error'
     ;;
 

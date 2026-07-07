@@ -1,5 +1,5 @@
-// wsm-core: Workspace Manager core (JSON API)
-// 仕様は docs/wsm.md。zsh 版 (bin/wsm-core) と同一の JSON API を実装し、
+// wsm-server: Workspace Manager core (JSON API)
+// 仕様は docs/wsm.md。zsh 版 (bin/wsm-server) と同一の JSON API を実装し、
 // UI 層 (bin/wsm) を無変更で差し替えられることをゴールとする。
 //
 // レイヤー (docs/wsm.md のレイヤー構成に対応):
