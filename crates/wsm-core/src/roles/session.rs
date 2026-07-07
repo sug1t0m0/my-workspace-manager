@@ -107,7 +107,7 @@ pub fn herdr_blocks_main_removal(ns_repo: &str) -> bool {
 /// マネージャー実装を横断した存在確認。tmux はセッション名で、herdr は
 /// リポジトリセッション (+ Issue なら workspace ラベル) で判定する。
 pub fn workspace_session_exists(ns_repo: &str, id: &WorkspaceId) -> bool {
-    if tmux_exists(&domain::session_name(ns_repo, id)) {
+    if tmux_exists(&domain::tmux_session_name(ns_repo, id)) {
         return true;
     }
     let repo_session = domain::session_name(ns_repo, &WorkspaceId::Main);
@@ -132,7 +132,7 @@ pub fn ensure(
 ) -> Result<String, String> {
     match manager {
         SessionManager::Tmux => {
-            let session = domain::session_name(ns_repo, id);
+            let session = domain::tmux_session_name(ns_repo, id);
             if !tmux_exists(&session) {
                 let cwd = cwd.to_string_lossy();
                 if !exec::succeeds("tmux", &["new-session", "-d", "-s", &session, "-c", &cwd]) {
@@ -175,7 +175,7 @@ pub fn ensure(
 pub fn remove_workspace_sessions(ns_repo: &str, id: &WorkspaceId) {
     exec::run_ignoring_failure(
         "tmux",
-        &["kill-session", "-t", &format!("={}", domain::session_name(ns_repo, id))],
+        &["kill-session", "-t", &format!("={}", domain::tmux_session_name(ns_repo, id))],
     );
 
     let session = domain::session_name(ns_repo, &WorkspaceId::Main);

@@ -16,13 +16,15 @@ _invalid() {
   exit 1
 }
 
-# repo: <ns>/<repo>。各セグメントは英数・._- (先頭 - とドットのみのセグメントは不可)
+# repo: <ns>/<repo>。ns は GitHub 規則 (英数と -。user も org も同じ)、
+# repo は英数・._- (先頭 - とドットのみは不可)。ns にドットが入らないことで
+# セッション名の / → . 変換の単射性が保証される (SessionManager 節)。
 _validate_repo() {
   local value=$1
   # パターンは変数に置く: [[ ]] 内の裸の \. は zsh のワード解析で . に潰れるため
-  local shape='^[a-zA-Z0-9_.][a-zA-Z0-9_.-]*/[a-zA-Z0-9_.][a-zA-Z0-9_.-]*$'
-  local dots_segment='(^|/)\.+(/|$)'
-  { [[ "$value" =~ $shape ]] && [[ ! "$value" =~ $dots_segment ]]; } || _invalid repo "$value"
+  local shape='^[a-zA-Z0-9][a-zA-Z0-9-]*/[a-zA-Z0-9_.][a-zA-Z0-9_.-]*$'
+  local dots_only_repo='/\.+$'
+  { [[ "$value" =~ $shape ]] && [[ ! "$value" =~ $dots_only_repo ]]; } || _invalid repo "$value"
 }
 
 # issue: main または数字のみ
@@ -110,6 +112,13 @@ _session_name() {
   fi
 }
 
+# tmux はセッション名の . と : をターゲット構文予約のため黙って _ に置換する。
+# tmux 実装ではドットを _ にした名前を使う (herdr は canonical のドット形式)。
+_tmux_session_name() {
+  local name=$(_session_name "$1" "$2")
+  echo "${name//./_}"
+}
+
 _tmux_session_exists() {
   local session=$1
   tmux has-session -t "=$session" 2>/dev/null
@@ -179,7 +188,7 @@ _herdr_stop_and_delete() {
 
 _workspace_session_exists() {
   local ns_repo=$1 id=$2
-  _tmux_session_exists "$(_session_name "$ns_repo" "$id")" && return 0
+  _tmux_session_exists "$(_tmux_session_name "$ns_repo" "$id")" && return 0
 
   local herdr_session=$(_session_name "$ns_repo" main)
   _herdr_session_running "$herdr_session" || return 1
@@ -195,7 +204,7 @@ _ensure_workspace_session() {
 
   case "$(_session_manager)" in
     tmux)
-      local session=$(_session_name "$ns_repo" "$id")
+      local session=$(_tmux_session_name "$ns_repo" "$id")
       if ! _tmux_session_exists "$session"; then
         tmux new-session -d -s "$session" -c "$cwd"
       fi
@@ -230,7 +239,7 @@ _ensure_workspace_session() {
 # main はセッションの stop + delete (Issue 残存チェックは cmd_remove が先に行う)。
 _remove_workspace_sessions() {
   local ns_repo=$1 id=$2
-  tmux kill-session -t "=$(_session_name "$ns_repo" "$id")" 2>/dev/null || true
+  tmux kill-session -t "=$(_tmux_session_name "$ns_repo" "$id")" 2>/dev/null || true
 
   local herdr_session=$(_session_name "$ns_repo" main)
   _herdr_session_running "$herdr_session" || return 0
@@ -572,17 +581,27 @@ cmd_list_repos() {
     _validate_project "$project"
     # Repos from GitHub project, filtered by ghq
     local all_repos
+    # repositoryOwner はユーザー・organization の両方を解決できる
     all_repos=$(gh api graphql -f query='
       query($owner: String!, $num: Int!) {
-        user(login: $owner) {
-          projectV2(number: $num) {
-            repositories(first: 100) {
-              nodes { nameWithOwner }
+        repositoryOwner(login: $owner) {
+          ... on User {
+            projectV2(number: $num) {
+              repositories(first: 100) {
+                nodes { nameWithOwner }
+              }
+            }
+          }
+          ... on Organization {
+            projectV2(number: $num) {
+              repositories(first: 100) {
+                nodes { nameWithOwner }
+              }
             }
           }
         }
       }' -f owner="$user" -F num="$project" \
-      -q '.data.user.projectV2.repositories.nodes[].nameWithOwner' 2>/dev/null) || true
+      -q '.data.repositoryOwner.projectV2.repositories.nodes[].nameWithOwner' 2>/dev/null) || true
 
     if [[ -z "$all_repos" ]]; then
       echo '[]'

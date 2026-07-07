@@ -48,16 +48,24 @@ pub fn session_name(ns_repo: &str, id: &WorkspaceId) -> String {
     }
 }
 
+/// tmux はセッション名の `.` と `:` をターゲット構文予約のため黙って `_` に
+/// 置換する。tmux 実装ではドットを `_` にした名前を使う (herdr は canonical)。
+pub fn tmux_session_name(ns_repo: &str, id: &WorkspaceId) -> String {
+    session_name(ns_repo, id).replace('.', "_")
+}
+
 // --- 引数検証 (SSH 経由で呼ばれるため必須) ---
 // シェルメタ文字だけでなく、パストラバーサル (..) やオプション注入 (先頭 -) も弾く。
 
-/// repo: `<ns>/<repo>`。各セグメントは英数・`._-` (先頭 `-` とドットのみは不可)。
+/// repo: `<ns>/<repo>`。ns は GitHub 規則 (英数と `-`。user も org も同じ)、
+/// repo は英数・`._-` (先頭 `-` とドットのみは不可)。ns にドットが入らないことで
+/// セッション名の `/` → `.` 変換の単射性が保証される。
 pub fn is_valid_repo(value: &str) -> bool {
     let segments: Vec<&str> = value.split('/').collect();
-    matches!(segments.as_slice(), [ns, repo] if is_valid_segment(ns) && is_valid_segment(repo))
+    matches!(segments.as_slice(), [ns, repo] if is_valid_user(ns) && is_valid_repo_segment(repo))
 }
 
-fn is_valid_segment(segment: &str) -> bool {
+fn is_valid_repo_segment(segment: &str) -> bool {
     !segment.is_empty()
         && !segment.starts_with('-')
         && !segment.chars().all(|c| c == '.')

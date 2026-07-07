@@ -160,6 +160,10 @@ fn parameter_shapes_are_validated() {
     let cases: &[(&[&str], &str)] = &[
         // repo: <ns>/<repo> の形。メタ文字・トラバーサル・オプション注入を弾く
         (&["list-issues", "--repo", "owner/repo;rm -rf"], "Invalid repo: owner/repo;rm -rf"),
+        // ns は GitHub 規則 (英数と -)。ドット・アンダースコアは入らない
+        // (セッション名の / → . 変換の単射性の根拠)
+        (&["list-issues", "--repo", "my.org/repo"], "Invalid repo: my.org/repo"),
+        (&["list-issues", "--repo", "my_org/repo"], "Invalid repo: my_org/repo"),
         (&["list-issues", "--repo", "repo-without-namespace"], "Invalid repo: repo-without-namespace"),
         (&["list-issues", "--repo", "a/b/c"], "Invalid repo: a/b/c"),
         (&["list-issues", "--repo", "../repo"], "Invalid repo: ../repo"),
@@ -241,8 +245,8 @@ fn list_repos_counts_active_workspaces() {
                 "worktree {home}/ghq/github.com/owner/repo\nHEAD aaa\nbranch refs/heads/main\n\nworktree {home}/worktrees/github.com/owner/repo/42\nHEAD bbb\nbranch refs/heads/feature/42\n\n"
             ),
         )
-        .stub("^tmux has-session -t =owner\\.repo$", "")
-        .stub("^tmux has-session -t =owner\\.repo-42$", "");
+        .stub("^tmux has-session -t =owner_repo$", "")
+        .stub("^tmux has-session -t =owner_repo-42$", "");
 
     // Act
     let out = env.run(&["list-repos", "--project", "none"]);
@@ -297,8 +301,8 @@ fn list_workspaces_lists_main_and_worktree_entries() {
                 "worktree {home}/worktrees/github.com/owner/repo/42\nHEAD bbb\nbranch refs/heads/feature/42\n\n"
             ),
         )
-        .stub("^tmux has-session -t =owner\\.repo$", "")
-        .stub("^tmux has-session -t =owner\\.repo-42$", "")
+        .stub("^tmux has-session -t =owner_repo$", "")
+        .stub("^tmux has-session -t =owner_repo-42$", "")
         .stub("^docker ps -a", "")
         .stub("^gh issue view 42 --repo owner/repo --json title,state", "Fix bug\tCLOSED\n");
 
@@ -355,8 +359,8 @@ fn list_issues_shows_orphaned_worktrees_as_closed_in_worktree_order() {
                 "worktree {home}/worktrees/github.com/owner/repo/41\nHEAD aaa\nbranch refs/heads/feature/41\n\nworktree {home}/worktrees/github.com/owner/repo/42\nHEAD bbb\nbranch refs/heads/feature/42\n\n"
             ),
         )
-        .stub("^tmux has-session -t =owner\\.repo-41$", "")
-        .stub("^tmux has-session -t =owner\\.repo-42$", "")
+        .stub("^tmux has-session -t =owner_repo-41$", "")
+        .stub("^tmux has-session -t =owner_repo-42$", "")
         .stub("^docker ps -a", "")
         .stub("^gh issue list --repo owner/repo", "43\tOther work\n")
         .stub("^gh issue view 41 --repo owner/repo --json title -q", "Old bug\n")
@@ -456,7 +460,7 @@ fn list_devcontainer_configs_includes_configured_fallback() {
 fn open_main_creates_session_and_returns_attach_command() {
     // Arrange: セッションは存在しない (has-session は未スタブ → 失敗)
     let env = TestEnv::new();
-    env.stub("^tmux new-session -d -s owner\\.repo -c ", "");
+    env.stub("^tmux new-session -d -s owner_repo -c ", "");
     let ghq_path = format!("{}/ghq/github.com/owner/repo", env.home_str());
 
     // Act
@@ -466,16 +470,16 @@ fn open_main_creates_session_and_returns_attach_command() {
     assert_eq!(out.status, Some(0));
     let v = out.stdout_json();
     assert_eq!(v["status"], "ok");
-    assert_eq!(v["session"], "owner.repo");
+    assert_eq!(v["session"], "owner_repo");
     assert_eq!(v["path"], ghq_path.as_str());
     let attach = v["attach_command"].as_str().expect("attach_command is a string");
     assert!(
-        attach.ends_with("tmux attach-session -t 'owner.repo'"),
+        attach.ends_with("tmux attach-session -t 'owner_repo'"),
         "unexpected attach_command: {attach}"
     );
     assert!(
         env.invocations()
-            .contains(&format!("tmux new-session -d -s owner.repo -c {ghq_path}")),
+            .contains(&format!("tmux new-session -d -s owner_repo -c {ghq_path}")),
         "session must be created at the ghq path: {:?}",
         env.invocations()
     );
@@ -486,7 +490,7 @@ fn open_issue_creates_worktree_branch_and_session() {
     // Arrange: worktree もブランチも存在しない (show-ref は未スタブ → 失敗)
     let env = TestEnv::new();
     env.stub("worktree add --relative-paths -b feature/42 ", "")
-        .stub("^tmux new-session -d -s owner\\.repo-42 -c ", "");
+        .stub("^tmux new-session -d -s owner_repo-42 -c ", "");
     let home = env.home_str();
     let worktree_path = format!("{home}/worktrees/github.com/owner/repo/42");
 
@@ -497,7 +501,7 @@ fn open_issue_creates_worktree_branch_and_session() {
     assert_eq!(out.status, Some(0));
     let v = out.stdout_json();
     assert_eq!(v["status"], "ok");
-    assert_eq!(v["session"], "owner.repo-42");
+    assert_eq!(v["session"], "owner_repo-42");
     assert_eq!(v["path"], worktree_path.as_str());
     assert!(
         env.invocations().contains(&format!(
@@ -831,7 +835,7 @@ fn open_with_config_starts_devcontainer_and_adds_window() {
     // Arrange: コンテナは存在しない (before = none) → created
     let env = TestEnv::new();
     env.write_home("ghq/github.com/owner/repo/.devcontainer/devcontainer.json", "{}")
-        .stub("^tmux new-session -d -s owner\\.repo -c ", "")
+        .stub("^tmux new-session -d -s owner_repo -c ", "")
         .stub("^docker ps -a", "")
         .stub("^devcontainer up --workspace-folder ", "")
         .stub("^docker ps -q ", "abc123\n")
@@ -857,7 +861,7 @@ fn open_with_config_starts_devcontainer_and_adds_window() {
     );
     assert!(
         invocations.contains(&format!(
-            "tmux new-window -d -P -F #{{pane_id}} -t owner.repo: -n 🐳 docker exec -it --user 'dev' -w '/workspaces/ghq/github.com/owner/repo' 'abc123' zsh"
+            "tmux new-window -d -P -F #{{pane_id}} -t owner_repo: -n 🐳 docker exec -it --user 'dev' -w '/workspaces/ghq/github.com/owner/repo' 'abc123' zsh"
         )),
         "🐳 window must exec into the container as remoteUser: {invocations:?}"
     );
@@ -873,7 +877,7 @@ fn open_issue_with_config_mounts_worktree_and_common_dir() {
     let env = TestEnv::new();
     env.write_home("fallback/devcontainer.json", "{}")
         .stub("worktree add --relative-paths -b feature/42 ", "")
-        .stub("^tmux new-session -d -s owner\\.repo-42 -c ", "")
+        .stub("^tmux new-session -d -s owner_repo-42 -c ", "")
         .stub("^docker ps -a", "")
         .stub("^devcontainer up --workspace-folder ", "")
         .stub("^docker ps -q ", "");
@@ -906,12 +910,12 @@ fn open_with_config_reuses_running_container_and_dedups_window() {
     // 既存ペインが dedup キーを持っている → ウィンドウは追加しない
     let env = TestEnv::new();
     env.write_home("ghq/github.com/owner/repo/.devcontainer/devcontainer.json", "{}")
-        .stub("^tmux has-session -t =owner\\.repo$", "")
+        .stub("^tmux has-session -t =owner_repo$", "")
         .stub("^docker ps -a", "running\n")
         .stub("^devcontainer up --workspace-folder ", "")
         .stub("^docker ps -q ", "abc123\n")
         .stub("^docker inspect --format ", "[{\"remoteUser\":\"dev\"}]\n")
-        .stub("^tmux list-panes -s -t owner\\.repo -F ", "abc123\n");
+        .stub("^tmux list-panes -s -t owner_repo -F ", "abc123\n");
     let cfg = format!("{}/ghq/github.com/owner/repo/.devcontainer/devcontainer.json", env.home_str());
 
     // Act
@@ -935,7 +939,7 @@ fn open_with_config_restarts_stopped_container() {
     // Arrange: コンテナは stopped (exited) → started
     let env = TestEnv::new();
     env.write_home("ghq/github.com/owner/repo/.devcontainer/devcontainer.json", "{}")
-        .stub("^tmux new-session -d -s owner\\.repo -c ", "")
+        .stub("^tmux new-session -d -s owner_repo -c ", "")
         .stub("^docker ps -a", "exited\n")
         .stub("^devcontainer up --workspace-folder ", "")
         .stub("^docker ps -q ", "abc123\n")
@@ -961,7 +965,7 @@ fn open_with_multiple_configs_starts_each_container() {
     let home = env.home_str();
     env.write_home("ghq/github.com/owner/repo/.devcontainer/devcontainer.json", "{}")
         .write_home("ghq/github.com/owner/repo/.devcontainer/alt/devcontainer.json", "{}")
-        .stub("^tmux new-session -d -s owner\\.repo -c ", "")
+        .stub("^tmux new-session -d -s owner_repo -c ", "")
         .stub("^docker ps -a", "")
         .stub("^devcontainer up --workspace-folder ", "")
         .stub("wsm\\.config=repo$", "cid-repo\n")
@@ -1009,7 +1013,7 @@ fn devcontainer_window_without_remote_user_omits_user_flag() {
     // Arrange: devcontainer.metadata に remoteUser がない
     let env = TestEnv::new();
     env.write_home("ghq/github.com/owner/repo/.devcontainer/devcontainer.json", "{}")
-        .stub("^tmux new-session -d -s owner\\.repo -c ", "")
+        .stub("^tmux new-session -d -s owner_repo -c ", "")
         .stub("^docker ps -a", "")
         .stub("^devcontainer up --workspace-folder ", "")
         .stub("^docker ps -q ", "abc123\n")
@@ -1024,7 +1028,7 @@ fn devcontainer_window_without_remote_user_omits_user_flag() {
     assert_eq!(out.status, Some(0));
     assert!(
         env.invocations().contains(&format!(
-            "tmux new-window -d -P -F #{{pane_id}} -t owner.repo: -n 🐳 docker exec -it -w '/workspaces/ghq/github.com/owner/repo' 'abc123' zsh"
+            "tmux new-window -d -P -F #{{pane_id}} -t owner_repo: -n 🐳 docker exec -it -w '/workspaces/ghq/github.com/owner/repo' 'abc123' zsh"
         )),
         "window command must omit --user cleanly: {:?}",
         env.invocations()
@@ -1036,7 +1040,7 @@ fn open_fails_when_devcontainer_up_fails() {
     // Arrange
     let env = TestEnv::new();
     env.write_home("ghq/github.com/owner/repo/.devcontainer/devcontainer.json", "{}")
-        .stub("^tmux new-session -d -s owner\\.repo -c ", "")
+        .stub("^tmux new-session -d -s owner_repo -c ", "")
         .stub("^docker ps -a", "")
         .stub_exit("^devcontainer up --workspace-folder ", "", 1);
     let cfg = format!("{}/ghq/github.com/owner/repo/.devcontainer/devcontainer.json", env.home_str());
@@ -1072,7 +1076,7 @@ fn remove_issue_tears_down_session_and_worktree() {
         json!({ "status": "ok", "message": "Removed worktree and session: owner.repo-42" })
     );
     let invocations = env.invocations();
-    assert!(invocations.contains(&"tmux kill-session -t =owner.repo-42".to_owned()));
+    assert!(invocations.contains(&"tmux kill-session -t =owner_repo-42".to_owned()));
     assert!(invocations.contains(&format!(
         "git -C {home}/ghq/github.com/owner/repo worktree remove {home}/worktrees/github.com/owner/repo/42"
     )));

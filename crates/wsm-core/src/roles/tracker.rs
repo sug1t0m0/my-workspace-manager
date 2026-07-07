@@ -42,8 +42,9 @@ pub fn open_issues(ns_repo: &str) -> Vec<(String, String)> {
 
 /// Project に属するリポジトリの ns_repo 一覧。取得できなければ空。
 /// GraphQL クエリは zsh 版と同一 (会話の互換性のため)。
+/// repositoryOwner はユーザー・organization の両方を解決できる。
 pub fn project_repos(user: &str, project: &str) -> Vec<String> {
-    const QUERY: &str = "\n      query($owner: String!, $num: Int!) {\n        user(login: $owner) {\n          projectV2(number: $num) {\n            repositories(first: 100) {\n              nodes { nameWithOwner }\n            }\n          }\n        }\n      }";
+    const QUERY: &str = "\n      query($owner: String!, $num: Int!) {\n        repositoryOwner(login: $owner) {\n          ... on User {\n            projectV2(number: $num) {\n              repositories(first: 100) {\n                nodes { nameWithOwner }\n              }\n            }\n          }\n          ... on Organization {\n            projectV2(number: $num) {\n              repositories(first: 100) {\n                nodes { nameWithOwner }\n              }\n            }\n          }\n        }\n      }";
     exec::stdout_if_ok(
         "gh",
         &[
@@ -56,7 +57,7 @@ pub fn project_repos(user: &str, project: &str) -> Vec<String> {
             "-F",
             &format!("num={project}"),
             "-q",
-            ".data.user.projectV2.repositories.nodes[].nameWithOwner",
+            ".data.repositoryOwner.projectV2.repositories.nodes[].nameWithOwner",
         ],
     )
     .map(|out| out.lines().filter(|l| !l.is_empty()).map(str::to_owned).collect())
