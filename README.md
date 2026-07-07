@@ -20,6 +20,10 @@ bin/wsm        # UI 層。fzf 選択・表示整形・ターミナル連携。co
   触れず、必ず core の JSON API を経由する。ホスト・DevContainer で同一の実装が動き、
   core への到達方法 (Transport) だけが実行環境で変わる。
 
+外部ツールとの連携 (GitHub, ghq, git worktree, tmux/herdr, devcontainers/cli,
+Ghostty) はすべてツール非依存の「ロール」(契約) として定義し、各ツールは
+ロールの 1 実装として交換・追加できる。詳細は docs/wsm.md の「ロールと実装」節。
+
 ## 設定
 
 マシン設定は `~/.config/wsm/config.toml` (XDG_CONFIG_HOME 準拠) に置き、core が読む。

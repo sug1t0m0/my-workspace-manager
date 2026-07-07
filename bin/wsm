@@ -102,34 +102,13 @@ _resolve_target() {
 
 # --- Terminal アダプタ ---
 # open 後にセッションへアタッチしたタブを端末エミュレーターに開かせる。
+# アタッチ用コマンドは core の open 応答 (attach_command) から受け取り、
+# UI はセッションマネージャー実装を知らない。
 # 現在の実装は Ghostty (macOS)。SSH transport (DevContainer) では
 # アタッチできないため何もしない。
 
 _terminal_available() {
   [[ "$WSM_TRANSPORT" == "local" && "$OSTYPE" == darwin* ]]
-}
-
-# manager は open 応答の値を渡す (設定の解決は core の責務)。
-_attach_command() {
-  local manager=$1
-  local session=$2
-  local workspace=$3
-
-  case "$manager" in
-    tmux)
-      local tmux_bin=${commands[tmux]:-/opt/homebrew/bin/tmux}
-      printf "%s attach-session -t '%s'" "$tmux_bin" "$session"
-      ;;
-    herdr)
-      local herdr_bin=${commands[herdr]:-"$HOME/.local/bin/herdr"}
-      local script="cd '$workspace' && exec '$herdr_bin' --session '$session'"
-      printf "/bin/bash -lc %q" "$script"
-      ;;
-    *)
-      echo "Error: invalid session manager: $manager" >&2
-      return 1
-      ;;
-  esac
 }
 
 _open_terminal_tab() {
@@ -434,10 +413,8 @@ case "$cmd" in
     [[ $(echo "$result" | jq -r '.status // empty') == "ok" ]] || exit 1
 
     if _terminal_available; then
-      session_name=$(echo "$result" | jq -r '.session // empty')
-      workspace=$(echo "$result" | jq -r '.path // empty')
-      manager=$(echo "$result" | jq -r '.manager // "tmux"')
-      [[ -n "$session_name" ]] && _open_terminal_tab "$(_attach_command "$manager" "$session_name" "$workspace")"
+      attach_command=$(echo "$result" | jq -r '.attach_command // empty')
+      [[ -n "$attach_command" ]] && _open_terminal_tab "$attach_command"
     fi
     ;;
 
