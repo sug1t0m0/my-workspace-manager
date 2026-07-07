@@ -2,6 +2,7 @@
 //! gh との会話 (引数列) は zsh 版と同一に保つ。契約テストのフェイクが
 //! この会話を前提にしているため。
 
+use crate::domain::RepoRef;
 use crate::exec;
 use serde_json::Value;
 
@@ -26,10 +27,11 @@ pub fn open_projects(user: &str) -> Vec<Value> {
 }
 
 /// open な Issue の (番号, タイトル) の列。取得できなければ空。
-pub fn open_issues(ns_repo: &str) -> Vec<(String, String)> {
+pub fn open_issues(repo: &RepoRef) -> Vec<(String, String)> {
+    let ns_repo = repo.ns_repo();
     exec::stdout_if_ok(
         "gh",
-        &["issue", "list", "--repo", ns_repo, "--limit", "50", "--json", "number,title", "-q", ISSUE_LINES_FILTER],
+        &["issue", "list", "--repo", &ns_repo, "--limit", "50", "--json", "number,title", "-q", ISSUE_LINES_FILTER],
     )
     .map(|out| {
         out.lines()
@@ -65,10 +67,11 @@ pub fn project_repos(user: &str, project: &str) -> Vec<String> {
 }
 
 /// 単一 Issue のタイトルと状態 (list-workspaces 用)。
-pub fn issue_title_and_state(ns_repo: &str, issue: &str) -> Option<(String, String)> {
+pub fn issue_title_and_state(repo: &RepoRef, issue: &str) -> Option<(String, String)> {
+    let ns_repo = repo.ns_repo();
     exec::stdout_if_ok(
         "gh",
-        &["issue", "view", issue, "--repo", ns_repo, "--json", "title,state", "-q", r#""\(.title)\t\(.state)""#],
+        &["issue", "view", issue, "--repo", &ns_repo, "--json", "title,state", "-q", r#""\(.title)\t\(.state)""#],
     )
     .and_then(|out| {
         out.trim_end_matches('\n')
@@ -78,10 +81,11 @@ pub fn issue_title_and_state(ns_repo: &str, issue: &str) -> Option<(String, Stri
 }
 
 /// 単一 Issue のタイトル (孤児 worktree の解決用)。
-pub fn issue_title(ns_repo: &str, issue: &str) -> Option<String> {
+pub fn issue_title(repo: &RepoRef, issue: &str) -> Option<String> {
+    let ns_repo = repo.ns_repo();
     exec::stdout_if_ok(
         "gh",
-        &["issue", "view", issue, "--repo", ns_repo, "--json", "title", "-q", ".title"],
+        &["issue", "view", issue, "--repo", &ns_repo, "--json", "title", "-q", ".title"],
     )
     .map(|s| s.trim_end_matches('\n').to_owned())
     .filter(|s| !s.is_empty())

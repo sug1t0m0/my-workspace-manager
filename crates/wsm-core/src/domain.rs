@@ -2,6 +2,51 @@
 
 use std::path::{Path, PathBuf};
 
+/// リポジトリの識別子。ns (user / organization) と repo は別の概念なので
+/// 分けて保持し、`<ns>/<repo>` の文字列表現は境界 (JSON・Docker ラベル・
+/// gh への引数) でだけ組み立てる。パースが入力検証を兼ねるため、
+/// 不正な形の RepoRef はそもそも作れない。
+#[derive(Clone, PartialEq, Eq, Hash)]
+pub struct RepoRef {
+    ns: String,
+    repo: String,
+}
+
+impl RepoRef {
+    /// `<ns>/<repo>` をパースする。ns は GitHub 規則 (英数と `-`。user も
+    /// org も同じ)、repo は英数・`._-` (先頭 `-` とドットのみは不可)。
+    /// ns にドットが入らないことで、セッション名の導出 (`<ns>.<repo>`) が
+    /// 単射になる。
+    pub fn parse(value: &str) -> Option<Self> {
+        match value.split('/').collect::<Vec<_>>().as_slice() {
+            [ns, repo] if is_valid_user(ns) && is_valid_repo_name(repo) => {
+                Some(Self { ns: (*ns).to_owned(), repo: (*repo).to_owned() })
+            }
+            _ => None,
+        }
+    }
+
+    pub fn ns(&self) -> &str {
+        &self.ns
+    }
+
+    pub fn repo(&self) -> &str {
+        &self.repo
+    }
+
+    /// 外部表現 `<ns>/<repo>`。
+    pub fn ns_repo(&self) -> String {
+        format!("{}/{}", self.ns, self.repo)
+    }
+}
+
+fn is_valid_repo_name(name: &str) -> bool {
+    !name.is_empty()
+        && !name.starts_with('-')
+        && !name.chars().all(|c| c == '.')
+        && name.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-'))
+}
+
 /// Workspace の id。`main` はリポジトリ本体、それ以外は Issue 番号の worktree。
 #[derive(Clone, PartialEq, Eq)]
 pub enum WorkspaceId {
@@ -25,14 +70,16 @@ impl WorkspaceId {
     }
 }
 
-pub fn ghq_path(home: &Path, ns_repo: &str) -> PathBuf {
-    home.join("ghq/github.com").join(ns_repo)
+pub fn ghq_path(home: &Path, repo: &RepoRef) -> PathBuf {
+    home.join("ghq/github.com").join(repo.ns()).join(repo.repo())
 }
 
-pub fn workspace_path(home: &Path, ns_repo: &str, id: &WorkspaceId) -> PathBuf {
+pub fn workspace_path(home: &Path, repo: &RepoRef, id: &WorkspaceId) -> PathBuf {
     match id {
-        WorkspaceId::Main => ghq_path(home, ns_repo),
-        WorkspaceId::Issue(issue) => home.join("worktrees/github.com").join(ns_repo).join(issue),
+        WorkspaceId::Main => ghq_path(home, repo),
+        WorkspaceId::Issue(issue) => {
+            home.join("worktrees/github.com").join(repo.ns()).join(repo.repo()).join(issue)
+        }
     }
 }
 
@@ -40,8 +87,10 @@ pub fn branch_name(issue: &str) -> String {
     format!("feature/{issue}")
 }
 
-pub fn session_name(ns_repo: &str, id: &WorkspaceId) -> String {
-    let repo_key = ns_repo.replace('/', ".");
+/// canonical なセッション名 `<ns>.<repo>(-<id>)`。ns にドットが入らないため
+/// 単射 (herdr がこの形式を使う)。
+pub fn session_name(repo: &RepoRef, id: &WorkspaceId) -> String {
+    let repo_key = format!("{}.{}", repo.ns(), repo.repo());
     match id {
         WorkspaceId::Main => repo_key,
         WorkspaceId::Issue(issue) => format!("{repo_key}-{issue}"),
@@ -49,35 +98,25 @@ pub fn session_name(ns_repo: &str, id: &WorkspaceId) -> String {
 }
 
 /// tmux はセッション名の `.` と `:` をターゲット構文予約のため黙って `_` に
-/// 置換する。tmux 実装ではドットを `_` にした名前を使う (herdr は canonical)。
-pub fn tmux_session_name(ns_repo: &str, id: &WorkspaceId) -> String {
-    session_name(ns_repo, id).replace('.', "_")
+/// 置換する。tmux 実装では区切りをすべて `_` に統一した名前を使う。
+/// `<ns>_<repo>` / `<ns>_<repo>_<id>`
+pub fn tmux_session_name(repo: &RepoRef, id: &WorkspaceId) -> String {
+    let repo_key = format!("{}_{}", repo.ns(), repo.repo().replace('.', "_"));
+    match id {
+        WorkspaceId::Main => repo_key,
+        WorkspaceId::Issue(issue) => format!("{repo_key}_{issue}"),
+    }
 }
 
 // --- 引数検証 (SSH 経由で呼ばれるため必須) ---
-// シェルメタ文字だけでなく、パストラバーサル (..) やオプション注入 (先頭 -) も弾く。
-
-/// repo: `<ns>/<repo>`。ns は GitHub 規則 (英数と `-`。user も org も同じ)、
-/// repo は英数・`._-` (先頭 `-` とドットのみは不可)。ns にドットが入らないことで
-/// セッション名の `/` → `.` 変換の単射性が保証される。
-pub fn is_valid_repo(value: &str) -> bool {
-    let segments: Vec<&str> = value.split('/').collect();
-    matches!(segments.as_slice(), [ns, repo] if is_valid_user(ns) && is_valid_repo_segment(repo))
-}
-
-fn is_valid_repo_segment(segment: &str) -> bool {
-    !segment.is_empty()
-        && !segment.starts_with('-')
-        && !segment.chars().all(|c| c == '.')
-        && segment.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-'))
-}
+// repo の検証は RepoRef::parse が兼ねる。
 
 /// issue: `main` または数字のみ。
 pub fn is_valid_issue(value: &str) -> bool {
     value == "main" || (!value.is_empty() && value.chars().all(|c| c.is_ascii_digit()))
 }
 
-/// user: 英数と `-` (先頭は英数)。
+/// user: 英数と `-` (先頭は英数)。GitHub の user / org 名の規則。
 pub fn is_valid_user(value: &str) -> bool {
     let mut chars = value.chars();
     chars.next().is_some_and(|c| c.is_ascii_alphanumeric())

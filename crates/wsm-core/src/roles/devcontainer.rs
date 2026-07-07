@@ -1,7 +1,7 @@
 //! DevContainer ロールの devcontainers/cli + docker 実装。
 //! コンテナの同一性は Docker ラベル (wsm.ns-repo / wsm.issue-id / wsm.config)。
 
-use crate::domain::WorkspaceId;
+use crate::domain::{RepoRef, WorkspaceId};
 use crate::exec;
 use std::path::{Path, PathBuf};
 
@@ -23,21 +23,11 @@ impl Outcome {
     }
 }
 
-/// (ns_repo, id) に一致するコンテナの集約状態: running / stopped / none。
-pub fn state(ns_repo: &str, id: &str) -> &'static str {
-    let states = exec::stdout_if_ok(
-        "docker",
-        &[
-            "ps",
-            "-a",
-            "--filter",
-            &format!("label=wsm.ns-repo={ns_repo}"),
-            "--filter",
-            &format!("label=wsm.issue-id={id}"),
-            "--format",
-            "{{.State}}",
-        ],
-    );
+/// (repo, id) に一致するコンテナの集約状態: running / stopped / none。
+pub fn state(repo: &RepoRef, id: &str) -> &'static str {
+    let ns_repo = repo.ns_repo();
+    let states =
+        exec::stdout_if_ok("docker", &labels_args(&ns_repo, id, None, "ps", "-a", "{{.State}}"));
     match states {
         Some(s) if s.lines().any(|l| l == "running") => "running",
         Some(s) if s.lines().any(|l| !l.is_empty()) => "stopped",
@@ -45,21 +35,10 @@ pub fn state(ns_repo: &str, id: &str) -> &'static str {
     }
 }
 
-/// (ns_repo, id) に一致するコンテナをすべて停止・削除する。冪等。
-pub fn down(ns_repo: &str, id: &str) {
-    let ids = exec::stdout_if_ok(
-        "docker",
-        &[
-            "ps",
-            "-a",
-            "--filter",
-            &format!("label=wsm.ns-repo={ns_repo}"),
-            "--filter",
-            &format!("label=wsm.issue-id={id}"),
-            "--format",
-            "{{.ID}}",
-        ],
-    );
+/// (repo, id) に一致するコンテナをすべて停止・削除する。冪等。
+pub fn down(repo: &RepoRef, id: &str) {
+    let ns_repo = repo.ns_repo();
+    let ids = exec::stdout_if_ok("docker", &labels_args(&ns_repo, id, None, "ps", "-a", "{{.ID}}"));
     ids.iter()
         .flat_map(|out| out.lines())
         .filter(|cid| !cid.is_empty())
@@ -96,7 +75,7 @@ fn state_for_config(ns_repo: &str, id: &str, cname: &str) -> Option<&'static str
 /// `--remove-existing-container` は渡さない (再入場時に副作用を保持するため)。
 pub fn up(
     home: &Path,
-    ns_repo: &str,
+    repo: &RepoRef,
     id: &WorkspaceId,
     workspace: &Path,
     config_path: &Path,
@@ -107,8 +86,8 @@ pub fn up(
         return Err(format!("Config not found: {}", config_path.display()));
     }
 
-    let before = state_for_config(ns_repo, id.as_str(), cname);
-    let args = up_args(home, ns_repo, id, workspace, config_path, cname);
+    let before = state_for_config(&repo.ns_repo(), id.as_str(), cname);
+    let args = up_args(home, repo, id, workspace, config_path, cname);
     if !exec::succeeds("devcontainer", &args) {
         return Err("devcontainer up failed".to_owned());
     }
@@ -122,7 +101,7 @@ pub fn up(
 /// devcontainer up の引数列を組み立てる純粋関数 (zsh 版と同一の並び)。
 fn up_args(
     home: &Path,
-    ns_repo: &str,
+    repo: &RepoRef,
     id: &WorkspaceId,
     workspace: &Path,
     config_path: &Path,
@@ -135,7 +114,7 @@ fn up_args(
         "--config",
         &config_path.to_string_lossy(),
         "--id-label",
-        &format!("wsm.ns-repo={ns_repo}"),
+        &format!("wsm.ns-repo={}", repo.ns_repo()),
         "--id-label",
         &format!("wsm.issue-id={}", id.as_str()),
         "--id-label",
@@ -147,7 +126,7 @@ fn up_args(
         .then(|| {
             let container_worktree =
                 format!("/workspaces/{}", workspace.strip_prefix(home).unwrap_or(workspace).display());
-            let container_common = format!("/workspaces/ghq/github.com/{ns_repo}/.git");
+            let container_common = format!("/workspaces/ghq/github.com/{}/.git", repo.ns_repo());
             [
                 "--mount-git-worktree-common-dir".to_owned(),
                 "--remote-env".to_owned(),
@@ -164,8 +143,9 @@ fn up_args(
 
 /// 起動済みコンテナに入る exec コマンドを組み立てる (docker・ラベル・remoteUser
 /// の知識はここに閉じる)。返り値は (コンテナ ID, コマンド)。コンテナがなければ None。
-pub fn exec_command(ns_repo: &str, id: &WorkspaceId, cname: &str) -> Option<(String, String)> {
-    let cid = exec::stdout_if_ok("docker", &labels_args(ns_repo, id.as_str(), Some(cname), "ps", "-q", ""))?
+pub fn exec_command(repo: &RepoRef, id: &WorkspaceId, cname: &str) -> Option<(String, String)> {
+    let ns_repo = repo.ns_repo();
+    let cid = exec::stdout_if_ok("docker", &labels_args(&ns_repo, id.as_str(), Some(cname), "ps", "-q", ""))?
         .lines()
         .next()
         .filter(|l| !l.is_empty())?

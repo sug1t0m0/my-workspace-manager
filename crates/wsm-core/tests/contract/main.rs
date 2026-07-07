@@ -246,7 +246,7 @@ fn list_repos_counts_active_workspaces() {
             ),
         )
         .stub("^tmux has-session -t =owner_repo$", "")
-        .stub("^tmux has-session -t =owner_repo-42$", "");
+        .stub("^tmux has-session -t =owner_repo_42$", "");
 
     // Act
     let out = env.run(&["list-repos", "--project", "none"]);
@@ -302,7 +302,7 @@ fn list_workspaces_lists_main_and_worktree_entries() {
             ),
         )
         .stub("^tmux has-session -t =owner_repo$", "")
-        .stub("^tmux has-session -t =owner_repo-42$", "")
+        .stub("^tmux has-session -t =owner_repo_42$", "")
         .stub("^docker ps -a", "")
         .stub("^gh issue view 42 --repo owner/repo --json title,state", "Fix bug\tCLOSED\n");
 
@@ -359,8 +359,8 @@ fn list_issues_shows_orphaned_worktrees_as_closed_in_worktree_order() {
                 "worktree {home}/worktrees/github.com/owner/repo/41\nHEAD aaa\nbranch refs/heads/feature/41\n\nworktree {home}/worktrees/github.com/owner/repo/42\nHEAD bbb\nbranch refs/heads/feature/42\n\n"
             ),
         )
-        .stub("^tmux has-session -t =owner_repo-41$", "")
-        .stub("^tmux has-session -t =owner_repo-42$", "")
+        .stub("^tmux has-session -t =owner_repo_41$", "")
+        .stub("^tmux has-session -t =owner_repo_42$", "")
         .stub("^docker ps -a", "")
         .stub("^gh issue list --repo owner/repo", "43\tOther work\n")
         .stub("^gh issue view 41 --repo owner/repo --json title -q", "Old bug\n")
@@ -490,7 +490,7 @@ fn open_issue_creates_worktree_branch_and_session() {
     // Arrange: worktree もブランチも存在しない (show-ref は未スタブ → 失敗)
     let env = TestEnv::new();
     env.stub("worktree add --relative-paths -b feature/42 ", "")
-        .stub("^tmux new-session -d -s owner_repo-42 -c ", "");
+        .stub("^tmux new-session -d -s owner_repo_42 -c ", "");
     let home = env.home_str();
     let worktree_path = format!("{home}/worktrees/github.com/owner/repo/42");
 
@@ -501,7 +501,7 @@ fn open_issue_creates_worktree_branch_and_session() {
     assert_eq!(out.status, Some(0));
     let v = out.stdout_json();
     assert_eq!(v["status"], "ok");
-    assert_eq!(v["session"], "owner_repo-42");
+    assert_eq!(v["session"], "owner_repo_42");
     assert_eq!(v["path"], worktree_path.as_str());
     assert!(
         env.invocations().contains(&format!(
@@ -877,7 +877,7 @@ fn open_issue_with_config_mounts_worktree_and_common_dir() {
     let env = TestEnv::new();
     env.write_home("fallback/devcontainer.json", "{}")
         .stub("worktree add --relative-paths -b feature/42 ", "")
-        .stub("^tmux new-session -d -s owner_repo-42 -c ", "")
+        .stub("^tmux new-session -d -s owner_repo_42 -c ", "")
         .stub("^docker ps -a", "")
         .stub("^devcontainer up --workspace-folder ", "")
         .stub("^docker ps -q ", "");
@@ -1076,7 +1076,7 @@ fn remove_issue_tears_down_session_and_worktree() {
         json!({ "status": "ok", "message": "Removed worktree and session: owner.repo-42" })
     );
     let invocations = env.invocations();
-    assert!(invocations.contains(&"tmux kill-session -t =owner_repo-42".to_owned()));
+    assert!(invocations.contains(&"tmux kill-session -t =owner_repo_42".to_owned()));
     assert!(invocations.contains(&format!(
         "git -C {home}/ghq/github.com/owner/repo worktree remove {home}/worktrees/github.com/owner/repo/42"
     )));
