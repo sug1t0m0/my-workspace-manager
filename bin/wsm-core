@@ -7,13 +7,40 @@ set -euo pipefail
 zmodload zsh/zselect 2>/dev/null || true
 
 # --- Argument validation ---
+# SSH 経由で呼ばれるため、パラメータごとに形まで検証する (docs/wsm.md 共通仕様)。
+# シェルメタ文字だけでなく、パストラバーサル (..) やオプション注入 (先頭 -) も弾く。
 
-_validate_arg() {
+_invalid() {
   local name=$1 value=$2
-  if [[ ! "$value" =~ ^[a-zA-Z0-9/_.-]+$ ]]; then
-    echo "{\"error\":\"Invalid $name: $value\"}" >&2
-    exit 1
-  fi
+  echo "{\"error\":\"Invalid $name: $value\"}" >&2
+  exit 1
+}
+
+# repo: <ns>/<repo>。各セグメントは英数・._- (先頭 - とドットのみのセグメントは不可)
+_validate_repo() {
+  local value=$1
+  # パターンは変数に置く: [[ ]] 内の裸の \. は zsh のワード解析で . に潰れるため
+  local shape='^[a-zA-Z0-9_.][a-zA-Z0-9_.-]*/[a-zA-Z0-9_.][a-zA-Z0-9_.-]*$'
+  local dots_segment='(^|/)\.+(/|$)'
+  { [[ "$value" =~ $shape ]] && [[ ! "$value" =~ $dots_segment ]]; } || _invalid repo "$value"
+}
+
+# issue: main または数字のみ
+_validate_issue() {
+  local value=$1
+  [[ "$value" == "main" || "$value" =~ ^[0-9]+$ ]] || _invalid issue "$value"
+}
+
+# user: 英数と - (先頭は英数)
+_validate_user() {
+  local value=$1
+  [[ "$value" =~ ^[a-zA-Z0-9][a-zA-Z0-9-]*$ ]] || _invalid user "$value"
+}
+
+# project: 数字のみ (none は list-repos が検証の前に処理する)
+_validate_project() {
+  local value=$1
+  [[ "$value" =~ ^[0-9]+$ ]] || _invalid project "$value"
 }
 
 # --- Settings ---
@@ -492,7 +519,7 @@ cmd_list_projects() {
   done
   [[ -z "$user" ]] && user=$(_gh_user)
   [[ -z "$user" ]] && { echo '{"error":"failed to resolve GitHub user"}' >&2; exit 1; }
-  _validate_arg "user" "$user"
+  _validate_user "$user"
 
   local projects
   projects=$(gh project list --owner "$user" --format json \
@@ -517,7 +544,7 @@ cmd_list_repos() {
   if [[ "$project" != "none" && -n "$project" ]]; then
     [[ -z "$user" ]] && user=$(_gh_user)
     [[ -z "$user" ]] && { echo '{"error":"failed to resolve GitHub user"}' >&2; exit 1; }
-    _validate_arg "user" "$user"
+    _validate_user "$user"
   fi
 
   local items=()
@@ -542,7 +569,7 @@ cmd_list_repos() {
       items+=("{\"ns_repo\":\"$repo\",\"active_count\":$count}")
     done <<< "$repos"
   else
-    _validate_arg "project" "$project"
+    _validate_project "$project"
     # Repos from GitHub project, filtered by ghq
     local all_repos
     all_repos=$(gh api graphql -f query='
@@ -596,7 +623,7 @@ cmd_list_issues() {
     esac
   done
   [[ -z "$ns_repo" ]] && { echo '{"error":"--repo required"}' >&2; exit 1; }
-  _validate_arg "repo" "$ns_repo"
+  _validate_repo "$ns_repo"
 
   local items=()
 
@@ -699,8 +726,8 @@ cmd_list_devcontainer_configs() {
   done
   [[ -z "$ns_repo" ]] && { echo '{"error":"--repo required"}' >&2; exit 1; }
   [[ -z "$id" ]] && { echo '{"error":"--issue required"}' >&2; exit 1; }
-  _validate_arg "repo" "$ns_repo"
-  _validate_arg "issue" "$id"
+  _validate_repo "$ns_repo"
+  _validate_issue "$id"
 
   local ws=$(_workspace_path "$ns_repo" "$id")
   local items=()
@@ -747,8 +774,8 @@ cmd_open() {
   done
   [[ -z "$ns_repo" ]] && { echo '{"error":"--repo required"}' >&2; exit 1; }
   [[ -z "$issue_id" ]] && { echo '{"error":"--issue required"}' >&2; exit 1; }
-  _validate_arg "repo" "$ns_repo"
-  _validate_arg "issue" "$issue_id"
+  _validate_repo "$ns_repo"
+  _validate_issue "$issue_id"
 
   local message=""
   local session_name=""
@@ -816,20 +843,20 @@ cmd_open() {
 }
 
 cmd_remove() {
-  local ns_repo="" target=""
+  local ns_repo="" issue_id=""
   while [[ $# -gt 0 ]]; do
     case "$1" in
       --repo) ns_repo=$2; shift 2 ;;
-      --target) target=$2; shift 2 ;;
+      --issue) issue_id=$2; shift 2 ;;
       *) shift ;;
     esac
   done
   [[ -z "$ns_repo" ]] && { echo '{"error":"--repo required"}' >&2; exit 1; }
-  [[ -z "$target" ]] && { echo '{"error":"--target required"}' >&2; exit 1; }
-  _validate_arg "repo" "$ns_repo"
-  _validate_arg "target" "$target"
+  [[ -z "$issue_id" ]] && { echo '{"error":"--issue required"}' >&2; exit 1; }
+  _validate_repo "$ns_repo"
+  _validate_issue "$issue_id"
 
-  if [[ "$target" == "main" ]]; then
+  if [[ "$issue_id" == "main" ]]; then
     # herdr のセッションは Issue workspace の器なので、残存中は main を消せない
     local herdr_session=$(_session_name "$ns_repo" main)
     if _herdr_session_running "$herdr_session" && _herdr_has_issue_workspaces "$herdr_session"; then
@@ -840,12 +867,12 @@ cmd_remove() {
     _devcontainer_down "$ns_repo" main
     echo "{\"status\":\"ok\",\"message\":\"Removed session: $ns_repo\"}"
   else
-    local session_name=$(_session_name "$ns_repo" "$target")
-    local worktree_path="$HOME/worktrees/github.com/${ns_repo}/${target}"
+    local session_name=$(_session_name "$ns_repo" "$issue_id")
+    local worktree_path="$HOME/worktrees/github.com/${ns_repo}/${issue_id}"
     local ghq_path=$(_ghq_path "$ns_repo")
 
-    _remove_workspace_sessions "$ns_repo" "$target"
-    _devcontainer_down "$ns_repo" "$target"
+    _remove_workspace_sessions "$ns_repo" "$issue_id"
+    _devcontainer_down "$ns_repo" "$issue_id"
     git -C "$ghq_path" worktree remove "$worktree_path" 2>/dev/null || true
     echo "{\"status\":\"ok\",\"message\":\"Removed worktree and session: $session_name\"}"
   fi

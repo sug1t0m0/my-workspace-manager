@@ -16,7 +16,7 @@ pub fn list_projects(args: &[String]) -> CmdResult {
         Some(user) => user,
         None => tracker::resolve_user().ok_or("failed to resolve GitHub user")?,
     };
-    let user = validated("user", user)?;
+    let user = validated("user", user, domain::is_valid_user)?;
     Ok(Value::Array(tracker::open_projects(&user)))
 }
 
@@ -31,8 +31,8 @@ pub fn list_repos(home: &Path, args: &[String]) -> CmdResult {
             Some(user) => user,
             None => tracker::resolve_user().ok_or("failed to resolve GitHub user")?,
         };
-        let user = validated("user", user)?;
-        let project = validated("project", project)?;
+        let user = validated("user", user, domain::is_valid_user)?;
+        let project = validated("project", project, domain::is_valid_project)?;
         let local: HashSet<String> = repostore::list_ns_repos().into_iter().collect();
         tracker::project_repos(&user, &project)
             .into_iter()
@@ -84,7 +84,7 @@ pub fn list_workspaces(home: &Path) -> CmdResult {
 }
 
 pub fn list_issues(home: &Path, args: &[String]) -> CmdResult {
-    let ns_repo = required(args, "--repo", "repo")?;
+    let ns_repo = required(args, "--repo", "repo", domain::is_valid_repo)?;
 
     let main_entry = issue_entry(
         "main",
@@ -123,8 +123,8 @@ pub fn list_issues(home: &Path, args: &[String]) -> CmdResult {
 }
 
 pub fn list_devcontainer_configs(home: &Path, args: &[String]) -> CmdResult {
-    let ns_repo = required(args, "--repo", "repo")?;
-    let issue = required(args, "--issue", "issue")?;
+    let ns_repo = required(args, "--repo", "repo", domain::is_valid_repo)?;
+    let issue = required(args, "--issue", "issue", domain::is_valid_issue)?;
     let workspace = domain::workspace_path(home, &ns_repo, &WorkspaceId::parse(&issue));
 
     let repo_entries = devcontainer::repo_configs(&workspace).into_iter().map(|(name, path)| {
@@ -137,8 +137,8 @@ pub fn list_devcontainer_configs(home: &Path, args: &[String]) -> CmdResult {
 }
 
 pub fn open(home: &Path, args: &[String]) -> CmdResult {
-    let ns_repo = required(args, "--repo", "repo")?;
-    let issue = required(args, "--issue", "issue")?;
+    let ns_repo = required(args, "--repo", "repo", domain::is_valid_repo)?;
+    let issue = required(args, "--issue", "issue", domain::is_valid_issue)?;
     let configs = flag_values(args, "--config");
 
     let id = WorkspaceId::parse(&issue);
@@ -187,9 +187,9 @@ pub fn open(home: &Path, args: &[String]) -> CmdResult {
 }
 
 pub fn remove(home: &Path, args: &[String]) -> CmdResult {
-    let ns_repo = required(args, "--repo", "repo")?;
-    let target = required(args, "--target", "target")?;
-    let id = WorkspaceId::parse(&target);
+    let ns_repo = required(args, "--repo", "repo", domain::is_valid_repo)?;
+    let issue = required(args, "--issue", "issue", domain::is_valid_issue)?;
+    let id = WorkspaceId::parse(&issue);
     let session = domain::session_name(&ns_repo, &id);
 
     // herdr のセッションは Issue workspace の器なので、残存中は main を消せない
@@ -256,8 +256,13 @@ fn issue_entry(id: &str, title: &str, active: bool, closed: bool, dc: &str) -> V
     json!({ "id": id, "title": title, "active": active, "closed": closed, "devcontainer": dc })
 }
 
+/// フラグの値を返す。空文字の値は未指定と同じ扱い (zsh 版の [[ -z ]] と同じ契約)。
 fn flag_value(args: &[String], flag: &str) -> Option<String> {
-    args.iter().position(|a| a == flag).and_then(|i| args.get(i + 1)).cloned()
+    args.iter()
+        .position(|a| a == flag)
+        .and_then(|i| args.get(i + 1))
+        .filter(|v| !v.is_empty())
+        .cloned()
 }
 
 fn flag_values(args: &[String], flag: &str) -> Vec<String> {
@@ -268,14 +273,17 @@ fn flag_values(args: &[String], flag: &str) -> Vec<String> {
         .collect()
 }
 
-fn required(args: &[String], flag: &str, name: &str) -> Result<String, String> {
+fn required(
+    args: &[String],
+    flag: &str,
+    name: &str,
+    valid: fn(&str) -> bool,
+) -> Result<String, String> {
     flag_value(args, flag)
         .ok_or_else(|| format!("{flag} required"))
-        .and_then(|value| validated(name, value))
+        .and_then(|value| validated(name, value, valid))
 }
 
-fn validated(name: &str, value: String) -> Result<String, String> {
-    domain::is_valid_arg(&value)
-        .then_some(value.clone())
-        .ok_or_else(|| format!("Invalid {name}: {value}"))
+fn validated(name: &str, value: String, valid: fn(&str) -> bool) -> Result<String, String> {
+    valid(&value).then_some(value.clone()).ok_or_else(|| format!("Invalid {name}: {value}"))
 }

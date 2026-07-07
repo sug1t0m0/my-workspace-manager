@@ -424,8 +424,9 @@ remove は逆順で破棄する(Terminal は管理外なので対象外):
   core (ホスト側) が SessionManager 実装に応じて組み立てる
 - `session` / `path`: 参考情報。UI のアタッチには使わない
 
-`remove --repo <ns_repo> --target <id>`
+`remove --repo <ns_repo> --issue <id>`
 → セッション・DevContainer を破棄。worktree の場合は worktree も削除する。
+(open と同じ id を受けるため、フラグ名も `--issue` で対称にしている)
 ```json
 {"status": "ok", "message": "..."}
 ```
@@ -435,7 +436,17 @@ remove は逆順で破棄する(Terminal は管理外なので対象外):
 - `active`: セッションが存在するか
 - `closed`: GitHub Issue が closed か
 - `devcontainer`: `running` / `stopped` / `none`
-- 引数値は `[a-zA-Z0-9/_.-]+` のみ許可(SSH 経由で呼ばれるため入力検証必須)
+- 引数はパラメータごとに形まで検証する(SSH 経由で呼ばれるため必須。
+  シェルメタ文字に加え、パストラバーサル `..` とオプション注入 `-...` も弾く)
+  - `repo`: `<ns>/<repo>`。各セグメントは英数・`._-`(先頭 `-` と
+    ドットのみのセグメントは不可。`.github` のような先頭ドットは可)
+  - `issue`: `main` または数字のみ
+  - `user`: 英数と `-`(先頭は英数)
+  - `project`: 数字のみ(`none` は list-repos の特別値)
+  - `--config`: 検証しない(ローカルパスを許容する)
+  - 空文字の値は未指定と同じ扱い(`--repo ""` は `--repo required`)
+  - 違反時は `{"error":"--<flag> required"}` または
+    `{"error":"Invalid <name>: <value>"}` を stderr に出して非ゼロ終了
 
 ## 決定事項
 

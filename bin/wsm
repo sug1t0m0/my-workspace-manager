@@ -441,7 +441,7 @@ case "$cmd" in
       target_id=${selected#*$'\t'}
     fi
 
-    result=$(_core remove --repo "$ns_repo" --target "$target_id")
+    result=$(_core remove --repo "$ns_repo" --issue "$target_id")
     echo "$result" | jq -r '.message // .error'
     ;;
 

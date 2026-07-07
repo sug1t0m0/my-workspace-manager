@@ -114,14 +114,39 @@ fn list_projects_fails_when_user_cannot_be_resolved() {
 }
 
 // --- 入力検証 ---
+// SSH 経由で呼ばれるため、パラメータごとに形まで検証する (docs/wsm.md 共通仕様)。
 
 #[test]
-fn list_issues_requires_repo_flag() {
+fn required_flags_are_enforced_per_subcommand() {
+    // Arrange
+    let env = TestEnv::new();
+    let cases: &[(&[&str], &str)] = &[
+        (&["list-issues"], "--repo required"),
+        (&["list-devcontainer-configs"], "--repo required"),
+        (&["list-devcontainer-configs", "--repo", "owner/repo"], "--issue required"),
+        (&["open"], "--repo required"),
+        (&["open", "--repo", "owner/repo"], "--issue required"),
+        (&["remove"], "--repo required"),
+        (&["remove", "--repo", "owner/repo"], "--issue required"),
+    ];
+
+    for (args, expected) in cases {
+        // Act
+        let out = env.run(args);
+
+        // Assert
+        assert_eq!(out.status, Some(1), "args: {args:?}");
+        assert_eq!(out.stderr_json(), json!({ "error": expected }), "args: {args:?}");
+    }
+}
+
+#[test]
+fn empty_flag_values_count_as_missing() {
     // Arrange
     let env = TestEnv::new();
 
     // Act
-    let out = env.run(&["list-issues"]);
+    let out = env.run(&["list-issues", "--repo", ""]);
 
     // Assert
     assert_eq!(out.status, Some(1));
@@ -129,16 +154,47 @@ fn list_issues_requires_repo_flag() {
 }
 
 #[test]
-fn list_issues_rejects_repo_with_invalid_characters() {
+fn parameter_shapes_are_validated() {
     // Arrange
     let env = TestEnv::new();
+    let cases: &[(&[&str], &str)] = &[
+        // repo: <ns>/<repo> の形。メタ文字・トラバーサル・オプション注入を弾く
+        (&["list-issues", "--repo", "owner/repo;rm -rf"], "Invalid repo: owner/repo;rm -rf"),
+        (&["list-issues", "--repo", "repo-without-namespace"], "Invalid repo: repo-without-namespace"),
+        (&["list-issues", "--repo", "a/b/c"], "Invalid repo: a/b/c"),
+        (&["list-issues", "--repo", "../repo"], "Invalid repo: ../repo"),
+        (&["list-issues", "--repo", "-owner/repo"], "Invalid repo: -owner/repo"),
+        // issue: main または数字のみ
+        (&["open", "--repo", "owner/repo", "--issue", "abc"], "Invalid issue: abc"),
+        (&["remove", "--repo", "owner/repo", "--issue", "12x"], "Invalid issue: 12x"),
+        (&["list-devcontainer-configs", "--repo", "owner/repo", "--issue", "-42"], "Invalid issue: -42"),
+        // user: 英数と - のみ / project: 数字のみ
+        (&["list-projects", "--user", "bad_user"], "Invalid user: bad_user"),
+        (&["list-repos", "--project", "5x", "--user", "me"], "Invalid project: 5x"),
+    ];
+
+    for (args, expected) in cases {
+        // Act
+        let out = env.run(args);
+
+        // Assert
+        assert_eq!(out.status, Some(1), "args: {args:?}");
+        assert_eq!(out.stderr_json(), json!({ "error": expected }), "args: {args:?}");
+    }
+}
+
+#[test]
+fn dotted_repo_names_stay_valid() {
+    // Arrange: .github のような先頭ドットのリポジトリ名は正当 (締めすぎ防止)
+    let env = TestEnv::new();
+    env.stub("^docker ps -a", "").stub("^gh issue list --repo owner/.github", "");
 
     // Act
-    let out = env.run(&["list-issues", "--repo", "owner/repo;rm -rf"]);
+    let out = env.run(&["list-issues", "--repo", "owner/.github"]);
 
     // Assert
-    assert_eq!(out.status, Some(1));
-    assert_eq!(out.stderr_json(), json!({ "error": "Invalid repo: owner/repo;rm -rf" }));
+    assert_eq!(out.status, Some(0));
+    assert_eq!(out.stdout_json()[0]["id"], "main");
 }
 
 // --- list-repos ---
@@ -633,7 +689,7 @@ fn remove_issue_with_herdr_closes_workspace_only() {
         .stub("^docker ps -a", "");
 
     // Act
-    let out = env.run(&["remove", "--repo", "owner/repo", "--target", "42"]);
+    let out = env.run(&["remove", "--repo", "owner/repo", "--issue", "42"]);
 
     // Assert: workspace close のみで、セッションは残す
     assert_eq!(out.status, Some(0));
@@ -665,7 +721,7 @@ fn remove_last_herdr_issue_workspace_stops_the_session() {
         .stub("^docker ps -a", "");
 
     // Act
-    let out = env.run(&["remove", "--repo", "owner/repo", "--target", "42"]);
+    let out = env.run(&["remove", "--repo", "owner/repo", "--issue", "42"]);
 
     // Assert: 空になったセッションは stop + delete で畳む
     assert_eq!(out.status, Some(0));
@@ -687,7 +743,7 @@ fn remove_main_with_herdr_refuses_while_issue_workspaces_remain() {
     );
 
     // Act
-    let out = env.run(&["remove", "--repo", "owner/repo", "--target", "main"]);
+    let out = env.run(&["remove", "--repo", "owner/repo", "--issue", "main"]);
 
     // Assert: エラーにして何も壊さない
     assert_eq!(out.status, Some(1));
@@ -718,7 +774,7 @@ fn remove_main_with_herdr_stops_session_when_no_issue_workspaces() {
         .stub("^docker ps -a", "");
 
     // Act
-    let out = env.run(&["remove", "--repo", "owner/repo", "--target", "main"]);
+    let out = env.run(&["remove", "--repo", "owner/repo", "--issue", "main"]);
 
     // Assert
     assert_eq!(out.status, Some(0));
@@ -1007,7 +1063,7 @@ fn remove_issue_tears_down_session_and_worktree() {
     let home = env.home_str();
 
     // Act
-    let out = env.run(&["remove", "--repo", "owner/repo", "--target", "42"]);
+    let out = env.run(&["remove", "--repo", "owner/repo", "--issue", "42"]);
 
     // Assert
     assert_eq!(out.status, Some(0));
@@ -1029,7 +1085,7 @@ fn remove_main_kills_session_but_keeps_the_clone() {
     env.stub("^docker ps -a", "");
 
     // Act
-    let out = env.run(&["remove", "--repo", "owner/repo", "--target", "main"]);
+    let out = env.run(&["remove", "--repo", "owner/repo", "--issue", "main"]);
 
     // Assert
     assert_eq!(out.status, Some(0));

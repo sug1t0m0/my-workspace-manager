@@ -48,10 +48,35 @@ pub fn session_name(ns_repo: &str, id: &WorkspaceId) -> String {
     }
 }
 
-/// 引数値の許可文字 (SSH 経由で呼ばれるため入力検証必須)。
-pub fn is_valid_arg(value: &str) -> bool {
-    !value.is_empty()
-        && value
-            .chars()
-            .all(|c| c.is_ascii_alphanumeric() || matches!(c, '/' | '_' | '.' | '-'))
+// --- 引数検証 (SSH 経由で呼ばれるため必須) ---
+// シェルメタ文字だけでなく、パストラバーサル (..) やオプション注入 (先頭 -) も弾く。
+
+/// repo: `<ns>/<repo>`。各セグメントは英数・`._-` (先頭 `-` とドットのみは不可)。
+pub fn is_valid_repo(value: &str) -> bool {
+    let segments: Vec<&str> = value.split('/').collect();
+    matches!(segments.as_slice(), [ns, repo] if is_valid_segment(ns) && is_valid_segment(repo))
+}
+
+fn is_valid_segment(segment: &str) -> bool {
+    !segment.is_empty()
+        && !segment.starts_with('-')
+        && !segment.chars().all(|c| c == '.')
+        && segment.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-'))
+}
+
+/// issue: `main` または数字のみ。
+pub fn is_valid_issue(value: &str) -> bool {
+    value == "main" || (!value.is_empty() && value.chars().all(|c| c.is_ascii_digit()))
+}
+
+/// user: 英数と `-` (先頭は英数)。
+pub fn is_valid_user(value: &str) -> bool {
+    let mut chars = value.chars();
+    chars.next().is_some_and(|c| c.is_ascii_alphanumeric())
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '-')
+}
+
+/// project: 数字のみ (`none` は list-repos が検証の前に処理する)。
+pub fn is_valid_project(value: &str) -> bool {
+    !value.is_empty() && value.chars().all(|c| c.is_ascii_digit())
 }
