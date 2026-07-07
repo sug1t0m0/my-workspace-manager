@@ -97,6 +97,15 @@ pub fn session_name(repo: &RepoRef, id: &WorkspaceId) -> String {
     }
 }
 
+/// herdr の workspace ラベル。main はリポジトリ名 (アタッチ時に見える名前)、
+/// Issue は Issue 番号。
+pub fn herdr_workspace_label(repo: &RepoRef, id: &WorkspaceId) -> String {
+    match id {
+        WorkspaceId::Main => repo.repo().to_owned(),
+        WorkspaceId::Issue(issue) => issue.clone(),
+    }
+}
+
 /// tmux はセッション名の `.` と `:` をターゲット構文予約のため黙って `_` に
 /// 置換する。tmux 実装では区切りをすべて `_` に統一した名前を使う。
 /// `<ns>_<repo>` / `<ns>_<repo>_<id>`

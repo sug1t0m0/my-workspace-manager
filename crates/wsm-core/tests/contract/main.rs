@@ -702,12 +702,17 @@ fn open_issue_with_herdr_starts_session_headlessly_when_not_running() {
 
 #[test]
 fn open_main_with_herdr_attaches_to_repo_session() {
-    // Arrange: セッション未起動 → ヘッドレス起動のみ (workspace 操作はしない)
+    // Arrange: セッション未起動 → ヘッドレス起動 + main の workspace を作る
+    // (ヘッドレス起動直後は workspace ゼロで、アタッチ時の自動作成に任せると
+    //  cwd がリポジトリにならないため)
     let env = TestEnv::new();
     let home = env.home_str();
+    let sock = herdr_sock(&home);
     env.write_home(".config/wsm/config.toml", HERDR_CONFIG)
         .stub_once("^herdr session list --json$", &herdr_sessions_json(&home, false))
-        .stub("^herdr session list --json$", &herdr_sessions_json(&home, true));
+        .stub("^herdr session list --json$", &herdr_sessions_json(&home, true))
+        .stub(&format!("^HERDR_SOCKET_PATH={sock} herdr workspace list$"), &herdr_workspaces_json(&[]))
+        .stub(&format!("^HERDR_SOCKET_PATH={sock} herdr workspace create "), "");
 
     // Act
     let out = env.run(&["open", "--repo", "owner/repo", "--issue", "main"]);
@@ -725,8 +730,40 @@ fn open_main_with_herdr_attaches_to_repo_session() {
     let invocations = env.invocations();
     assert!(invocations.contains(&"herdr --session owner.repo server".to_owned()));
     assert!(
-        !invocations.iter().any(|l| l.contains("workspace")),
-        "main open must not touch workspaces: {invocations:?}"
+        invocations.contains(&format!(
+            "HERDR_SOCKET_PATH={sock} herdr workspace create --cwd {home}/ghq/github.com/owner/repo --label repo --focus"
+        )),
+        "main workspace must be created at the ghq path: {invocations:?}"
+    );
+}
+
+#[test]
+fn open_main_with_herdr_focuses_existing_main_workspace() {
+    // Arrange: main の workspace (ラベル = リポジトリ名) が既にある
+    let env = TestEnv::new();
+    let home = env.home_str();
+    let sock = herdr_sock(&home);
+    env.write_home(".config/wsm/config.toml", HERDR_CONFIG)
+        .stub("^herdr session list --json$", &herdr_sessions_json(&home, true))
+        .stub(
+            &format!("^HERDR_SOCKET_PATH={sock} herdr workspace list$"),
+            &herdr_workspaces_json(&[("w1", "repo"), ("w7", "42")]),
+        )
+        .stub(&format!("^HERDR_SOCKET_PATH={sock} herdr workspace focus "), "");
+
+    // Act
+    let out = env.run(&["open", "--repo", "owner/repo", "--issue", "main"]);
+
+    // Assert
+    assert_eq!(out.status, Some(0));
+    let invocations = env.invocations();
+    assert!(
+        invocations.contains(&format!("HERDR_SOCKET_PATH={sock} herdr workspace focus w1")),
+        "existing main workspace must be focused: {invocations:?}"
+    );
+    assert!(
+        !invocations.iter().any(|l| l.contains("workspace create")),
+        "must not create a duplicate main workspace: {invocations:?}"
     );
 }
 

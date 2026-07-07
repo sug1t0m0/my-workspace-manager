@@ -224,17 +224,24 @@ _ensure_workspace_session() {
       }
       local session=$(_session_name "$ns_repo" main)
       _herdr_ensure_running "$session"
-      if [[ "$id" != "main" ]]; then
-        local sock=$(_herdr_socket_path "$session")
-        local wid=$(_herdr_workspace_id "$session" "$id")
-        if [[ -n "$wid" ]]; then
-          HERDR_SOCKET_PATH=$sock herdr workspace focus "$wid" >/dev/null 2>&1 || true
-        else
-          HERDR_SOCKET_PATH=$sock herdr workspace create --cwd "$cwd" --label "$id" --focus >/dev/null 2>&1 || {
-            echo '{"error":"failed to create herdr workspace"}' >&2
-            exit 1
-          }
-        fi
+      # main も workspace を保証する (ラベル = リポジトリ名)。ヘッドレス起動
+      # 直後のセッションは workspace ゼロで、アタッチ時の自動作成に任せると
+      # cwd がリポジトリにならないため
+      local label
+      if [[ "$id" == "main" ]]; then
+        label=${ns_repo##*/}
+      else
+        label=$id
+      fi
+      local sock=$(_herdr_socket_path "$session")
+      local wid=$(_herdr_workspace_id "$session" "$label")
+      if [[ -n "$wid" ]]; then
+        HERDR_SOCKET_PATH=$sock herdr workspace focus "$wid" >/dev/null 2>&1 || true
+      else
+        HERDR_SOCKET_PATH=$sock herdr workspace create --cwd "$cwd" --label "$label" --focus >/dev/null 2>&1 || {
+          echo '{"error":"failed to create herdr workspace"}' >&2
+          exit 1
+        }
       fi
       echo "$session"
       ;;

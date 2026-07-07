@@ -145,23 +145,25 @@ pub fn ensure(
             exec::which("herdr").ok_or("herdr not installed")?;
             let session = domain::session_name(repo, &WorkspaceId::Main);
             herdr_ensure_running(&session)?;
-            if let WorkspaceId::Issue(issue) = id {
-                let sock = herdr_socket_path(&session)
-                    .ok_or_else(|| format!("failed to resolve herdr socket: {session}"))?;
-                let env = [("HERDR_SOCKET_PATH", sock.as_str())];
-                match herdr_workspace_id(&sock, issue) {
-                    Some(wid) => {
-                        exec::run_ignoring_failure_env("herdr", &["workspace", "focus", &wid], &env)
-                    }
-                    None => {
-                        let cwd = cwd.to_string_lossy();
-                        exec::stdout_if_ok_env(
-                            "herdr",
-                            &["workspace", "create", "--cwd", &cwd, "--label", issue, "--focus"],
-                            &env,
-                        )
-                        .ok_or("failed to create herdr workspace")?;
-                    }
+            // main も workspace を保証する (ラベル = リポジトリ名)。ヘッドレス
+            // 起動直後のセッションは workspace ゼロで、アタッチ時の自動作成に
+            // 任せると cwd がリポジトリにならないため
+            let label = domain::herdr_workspace_label(repo, id);
+            let sock = herdr_socket_path(&session)
+                .ok_or_else(|| format!("failed to resolve herdr socket: {session}"))?;
+            let env = [("HERDR_SOCKET_PATH", sock.as_str())];
+            match herdr_workspace_id(&sock, &label) {
+                Some(wid) => {
+                    exec::run_ignoring_failure_env("herdr", &["workspace", "focus", &wid], &env)
+                }
+                None => {
+                    let cwd = cwd.to_string_lossy();
+                    exec::stdout_if_ok_env(
+                        "herdr",
+                        &["workspace", "create", "--cwd", &cwd, "--label", &label, "--focus"],
+                        &env,
+                    )
+                    .ok_or("failed to create herdr workspace")?;
                 }
             }
             Ok(session)
