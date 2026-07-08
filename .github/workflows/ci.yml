@@ -1,5 +1,5 @@
-# 契約テストを両実装 (Rust / zsh リファレンス) で回す。
-# macos ランナーを使うのは、実運用環境 (macOS ホスト) と zsh / BSD ツール群を
+# 契約テストを回す。
+# macos ランナーを使うのは、実運用環境 (macOS ホスト) と BSD ツール群を
 # 揃えるため。外部コマンドはハーネスがフェイクするため gh 等は不要。
 name: ci
 
@@ -14,7 +14,5 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
-      - name: Contract tests (Rust server)
+      - name: Contract tests
         run: cargo test --test contract
-      - name: Contract tests (zsh reference server)
-        run: WSM_SERVER_BIN="$PWD/bin/wsm-server" cargo test --test contract

@@ -55,8 +55,8 @@ fn run(args: &[String]) -> CmdResult {
     }
 }
 
-/// フラグの値を返す。同名フラグの重複は後勝ち (zsh 版のループ上書きと同じ契約)。
-/// 空文字の値は未指定と同じ扱い (zsh 版の [[ -z ]] と同じ契約)。
+/// フラグの値を返す。同名フラグの重複は後勝ち、空文字の値は未指定と
+/// 同じ扱い (docs/wsm.md 共通仕様)。
 fn flag_value(args: &[String], flag: &str) -> Option<String> {
     args.iter()
         .rposition(|a| a == flag)

@@ -1,6 +1,6 @@
 //! Tracker ロールの GitHub 実装 (gh CLI)。読み取り専用。
-//! gh との会話 (引数列) は zsh 版と同一に保つ。契約テストのフェイクが
-//! この会話を前提にしているため。
+//! gh との会話 (引数列) は契約の一部。契約テストのフェイクが
+//! この会話を前提にしているため、変更はテストの変更を伴う。
 
 use wsm_shared::domains::RepoRef;
 use crate::infra::exec;
@@ -43,7 +43,7 @@ pub fn open_issues(repo: &RepoRef) -> Vec<(String, String)> {
 }
 
 /// Project に属するリポジトリの ns_repo 一覧。取得できなければ空。
-/// GraphQL クエリは zsh 版と同一 (会話の互換性のため)。
+/// GraphQL クエリも会話の一部 (契約テストのフェイクが前提にする)。
 /// repositoryOwner はユーザー・organization の両方を解決できる。
 pub fn project_repos(user: &str, project: &str) -> Vec<String> {
     const QUERY: &str = "\n      query($owner: String!, $num: Int!) {\n        repositoryOwner(login: $owner) {\n          ... on User {\n            projectV2(number: $num) {\n              repositories(first: 100) {\n                nodes { nameWithOwner }\n              }\n            }\n          }\n          ... on Organization {\n            projectV2(number: $num) {\n              repositories(first: 100) {\n                nodes { nameWithOwner }\n              }\n            }\n          }\n        }\n      }";

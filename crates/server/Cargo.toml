@@ -1,5 +1,4 @@
-# Rust 版 wsm-server。zsh 版 (bin/wsm-server) と JSON API 互換で、完成まで並存する。
-# ビルド成果物は target/debug/wsm-server に出るため bin/ とは衝突しない。
+# wsm-server (JSON API)。仕様は docs/wsm.md、挙動は契約テストが固定する。
 [package]
 name = "wsm-server"
 version = "0.1.0"

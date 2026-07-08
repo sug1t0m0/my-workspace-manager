@@ -1,4 +1,4 @@
-//! Settings: config.toml (zsh 版と同じ `key = "value"` サブセット) と
+//! Settings: config.toml (`key = "value"` のサブセットのみ対応) と
 //! 環境変数オーバーライド。優先順位: 環境変数 > 設定ファイル > 組み込み既定値。
 
 use std::path::{Path, PathBuf};

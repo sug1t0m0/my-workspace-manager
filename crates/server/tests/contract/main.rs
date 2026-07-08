@@ -1,7 +1,7 @@
 // wsm-server の JSON API 契約テスト (docs/wsm.md が仕様)。
 //
-// 既定ではビルドした Rust 版を検証する。zsh 版 (リファレンス実装) に対して
-// 実行するには: WSM_SERVER_BIN=$PWD/bin/wsm-server cargo test --test contract
+// 既定ではビルドしたバイナリを検証する。WSM_SERVER_BIN=<path> で別の
+// ビルド (リリースバイナリ等) に差し替えて同じスイートを回せる。
 //
 // JSON の比較は意味比較 (パース後の等価判定)。整形の差は契約に含めない。
 
@@ -1350,4 +1350,56 @@ fn remove_main_kills_session_but_keeps_the_clone() {
         "main must never remove a worktree: {:?}",
         env.invocations()
     );
+}
+
+// --- エラー契約 (外部コマンド起動失敗) ---
+// docs/wsm.md 決定事項「エラーは必ずちょうど 1 つの error JSON で返す」。
+// 外部コマンドが起動失敗しても「JSON なしの無言の失敗」はしない: 照会系は
+// 取得できなかった部分を除いた結果で成功し、変更系は 1 つの error JSON で失敗する。
+
+#[test]
+fn list_repos_returns_empty_array_when_ghq_fails() {
+    // Arrange: ghq は未スタブ → 起動失敗相当 (出力なし・exit 1)
+    let env = TestEnv::new();
+
+    // Act
+    let out = env.run(&["list-repos", "--project", "none"]);
+
+    // Assert: 無言の exit 1 ではなく、空配列で成功する
+    assert_eq!(out.status, Some(0));
+    assert_eq!(out.stdout_json(), json!([]));
+    assert_eq!(out.stderr, "");
+}
+
+#[test]
+fn list_issues_degrades_to_main_when_tracker_fails() {
+    // Arrange: gh は未スタブ → 起動失敗相当 (gh 未ログイン等)
+    let env = TestEnv::new();
+
+    // Act
+    let out = env.run(&["list-issues", "--repo", "owner/repo"]);
+
+    // Assert: 取得できなかった Issue を除き、main だけの一覧で成功する
+    assert_eq!(out.status, Some(0));
+    assert_eq!(
+        out.stdout_json(),
+        json!([
+            { "id": "main", "title": "main", "active": false, "closed": false, "devcontainer": "none" },
+        ])
+    );
+    assert_eq!(out.stderr, "");
+}
+
+#[test]
+fn open_fails_with_single_error_json_when_worktree_add_fails() {
+    // Arrange: git は未スタブ → show-ref も worktree add も失敗する
+    let env = TestEnv::new();
+
+    // Act
+    let out = env.run(&["open", "--repo", "owner/repo", "--issue", "42"]);
+
+    // Assert: stderr はちょうど 1 つの error JSON、stdout は空
+    assert_eq!(out.status, Some(1));
+    assert_eq!(out.stdout, "");
+    assert_eq!(out.stderr_json(), json!({ "error": "Failed to create worktree" }));
 }

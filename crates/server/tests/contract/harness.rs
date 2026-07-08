@@ -1,7 +1,7 @@
 // 契約テストのハーネス。
 //
-// テスト対象は既定でビルドした Rust 版バイナリ、環境変数 WSM_SERVER_BIN で
-// zsh 版 (bin/wsm-server) 等に差し替えられる。外部コマンド (gh, ghq, git,
+// テスト対象は既定でビルドしたバイナリ、環境変数 WSM_SERVER_BIN で別の
+// ビルド (リリースバイナリ等) に差し替えられる。外部コマンド (gh, ghq, git,
 // tmux, herdr, docker, devcontainer) は PATH 先頭のフェイクに差し替え、
 // テストごとの一時 HOME と合わせて完全に隔離する。
 //

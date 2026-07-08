@@ -98,7 +98,7 @@ pub fn up(
     })
 }
 
-/// devcontainer up の引数列を組み立てる純粋関数 (zsh 版と同一の並び)。
+/// devcontainer up の引数列を組み立てる純粋関数 (並びは契約テストが固定)。
 fn up_args(
     paths: &domain::Paths,
     repo: &RepoRef,

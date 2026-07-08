@@ -48,7 +48,7 @@ pub fn succeeds(cmd: impl AsRef<OsStr>, args: &[impl AsRef<OsStr>]) -> bool {
     output(cmd, args).is_some_and(|o| o.status.success())
 }
 
-/// 失敗してもよい呼び出し (zsh 版の `|| true` に相当)。
+/// 失敗してもよい呼び出し (ベストエフォートの後始末などに使う)。
 pub fn run_ignoring_failure(cmd: impl AsRef<OsStr>, args: &[impl AsRef<OsStr>]) {
     let _ = output(cmd, args);
 }
