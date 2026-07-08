@@ -1,0 +1,103 @@
+#!/bin/sh
+# wsm-tracker-demo: 階層付きダミーデータを返す Tracker プラグイン。
+#
+# 用途は 2 つ:
+# - UI 開発の治具: 実トラッカーなしで階層ドリルダウン等の UX を確かめる
+# - プラグイン実装の見本: 契約 (docs/wsm.md「Tracker プラグイン契約」) を
+#   満たすのに必要なものがシェルスクリプト 1 枚であることを示す
+#
+# 使い方: config.toml に登録し、任意の [[repo]] に tracker = "demo" を付ける。
+#   [[tracker]]
+#   name = "demo"
+#   path = "/path/to/examples/wsm-tracker-demo"
+#
+# repo-group-repos-v0 が返すリポジトリは WSM_TRACKER_DEMO_REPOS
+# (カンマ区切りの ns/repo) で注入できる。
+#
+# ダミーデータの階層:
+#   #100 Epic: demo migration  ─ #110 Child: extract module ─ #120 Grandchild: deep task
+#   │                          └ #111 Child: write docs
+#   #101 Standalone task
+
+set -eu
+
+usage() {
+  echo "Usage: wsm-tracker-demo <list-repo-groups-v0|repo-group-repos-v0|list-issues-v0|list-issues-v1|issue-v0|info-v0>" >&2
+  exit 1
+}
+
+# フラグの値を取り出す (同名フラグの重複は後勝ち)
+flag() {
+  name=$1; shift
+  value=""
+  while [ $# -gt 0 ]; do
+    if [ "$1" = "$name" ] && [ $# -ge 2 ]; then
+      value=$2; shift 2
+    else
+      shift
+    fi
+  done
+  [ -n "$value" ] || { echo "$name required" >&2; exit 1; }
+  printf '%s' "$value"
+}
+
+verb=${1:-}
+[ $# -gt 0 ] && shift
+
+case "$verb" in
+  list-repo-groups-v0)
+    echo '[{"id":"1","title":"Demo Group"}]'
+    ;;
+
+  repo-group-repos-v0)
+    flag --group "$@" >/dev/null
+    repos=${WSM_TRACKER_DEMO_REPOS:-}
+    if [ -z "$repos" ]; then
+      echo '[]'
+    else
+      printf '[' && printf '%s' "$repos" | awk -F, '{for(i=1;i<=NF;i++){printf "%s\"%s\"", (i>1?",":""), $i}}' && echo ']'
+    fi
+    ;;
+
+  list-issues-v0)
+    # 平坦な一覧 (v1 非対応プラグインの挙動を試すときは v1 の case を消す)
+    flag --repo "$@" >/dev/null
+    echo '[{"id":"100","title":"Epic: demo migration"},{"id":"101","title":"Standalone task"}]'
+    ;;
+
+  list-issues-v1)
+    flag --repo "$@" >/dev/null
+    # --parent は任意なので flag() を使わず自前で拾う
+    parent=""
+    while [ $# -gt 0 ]; do
+      if [ "$1" = "--parent" ] && [ $# -ge 2 ]; then parent=$2; shift 2; else shift; fi
+    done
+    case "$parent" in
+      "")   echo '[{"id":"100","title":"Epic: demo migration","has_children":true},{"id":"101","title":"Standalone task"}]' ;;
+      100)  echo '[{"id":"110","title":"Child: extract module","has_children":true},{"id":"111","title":"Child: write docs"}]' ;;
+      110)  echo '[{"id":"120","title":"Grandchild: deep task"}]' ;;
+      *)    echo '[]' ;;
+    esac
+    ;;
+
+  issue-v0)
+    flag --repo "$@" >/dev/null
+    id=$(flag --id "$@")
+    case "$id" in
+      100) echo '{"title":"Epic: demo migration","state":"open"}' ;;
+      101) echo '{"title":"Standalone task","state":"open"}' ;;
+      110) echo '{"title":"Child: extract module","state":"open"}' ;;
+      111) echo '{"title":"Child: write docs","state":"open"}' ;;
+      120) echo '{"title":"Grandchild: deep task","state":"open"}' ;;
+      *)   echo '{"title":"(closed demo issue)","state":"closed"}' ;;
+    esac
+    ;;
+
+  info-v0)
+    echo '{"name":"demo","protocol":["list-repo-groups-v0","repo-group-repos-v0","list-issues-v0","list-issues-v1","issue-v0","info-v0"],"ready":true,"diagnosis":null}'
+    ;;
+
+  *)
+    usage
+    ;;
+esac
