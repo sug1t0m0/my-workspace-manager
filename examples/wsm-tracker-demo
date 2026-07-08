@@ -22,7 +22,7 @@
 set -eu
 
 usage() {
-  echo "Usage: wsm-tracker-demo <list-repo-groups-v0|repo-group-repos-v0|list-issues-v0|list-issues-v1|issue-v0|info-v0>" >&2
+  echo "Usage: wsm-tracker-demo <list-repo-groups-v0|repo-group-repos-v0|list-issues-v0|list-issues-v1|list-issues-v2|issue-v0|info-v0>" >&2
   exit 1
 }
 
@@ -80,12 +80,33 @@ case "$verb" in
     esac
     ;;
 
+  list-issues-v2)
+    # ページング対応版: トップレベルは 2 ページに分けて「… さらに読み込む」を試せる
+    flag --repo "$@" >/dev/null
+    parent="" cursor=""
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --parent) parent=${2:-}; shift 2 ;;
+        --cursor) cursor=${2:-}; shift 2 ;;
+        *) shift ;;
+      esac
+    done
+    case "$parent:$cursor" in
+      :)      echo '{"issues":[{"id":"100","title":"Epic: demo migration","has_children":true},{"id":"101","title":"Standalone task"}],"next_cursor":"PAGE2"}' ;;
+      :PAGE2) echo '{"issues":[{"id":"102","title":"Second page task"}],"next_cursor":null}' ;;
+      100:*)  echo '{"issues":[{"id":"110","title":"Child: extract module","has_children":true},{"id":"111","title":"Child: write docs"}],"next_cursor":null}' ;;
+      110:*)  echo '{"issues":[{"id":"120","title":"Grandchild: deep task"}],"next_cursor":null}' ;;
+      *)      echo '{"issues":[],"next_cursor":null}' ;;
+    esac
+    ;;
+
   issue-v0)
     flag --repo "$@" >/dev/null
     id=$(flag --id "$@")
     case "$id" in
       100) echo '{"title":"Epic: demo migration","state":"open"}' ;;
       101) echo '{"title":"Standalone task","state":"open"}' ;;
+      102) echo '{"title":"Second page task","state":"open"}' ;;
       110) echo '{"title":"Child: extract module","state":"open"}' ;;
       111) echo '{"title":"Child: write docs","state":"open"}' ;;
       120) echo '{"title":"Grandchild: deep task","state":"open"}' ;;
@@ -94,7 +115,7 @@ case "$verb" in
     ;;
 
   info-v0)
-    echo '{"name":"demo","protocol":["list-repo-groups-v0","repo-group-repos-v0","list-issues-v0","list-issues-v1","issue-v0","info-v0"],"ready":true,"diagnosis":null}'
+    echo '{"name":"demo","protocol":["list-repo-groups-v0","repo-group-repos-v0","list-issues-v0","list-issues-v1","list-issues-v2","issue-v0","info-v0"],"ready":true,"diagnosis":null}'
     ;;
 
   *)

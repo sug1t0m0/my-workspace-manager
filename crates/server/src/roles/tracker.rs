@@ -45,28 +45,58 @@ pub fn repo_group_repos(bin: &Path, group: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// open な Issue。1 要素は (id, タイトル, 子 Issue の有無)。取得できなければ空。
-/// 並びはプラグインの返した順 (UI の表示順)。
+/// open な Issue の 1 ページ。(一覧, 続きの cursor) を返し、一覧の 1 要素は
+/// (id, タイトル, 子 Issue の有無)。取得できなければ空。
+/// 並びと 1 ページの件数はプラグインの責務 (UI はそのまま表示する)。
 ///
-/// まず階層対応の list-issues-v1 を試し、非対応のプラグイン (未知の動詞 →
-/// 非ゼロ) には list-issues-v0 に落ちて has_children を false で補う。
-/// v0 は階層を表現できないため、`--parent` 指定時のフォールバックは空。
-pub fn open_issues(bin: &Path, repo: &RepoRef, parent: Option<&str>) -> Vec<(String, String, bool)> {
+/// ページング対応の list-issues-v2 → 階層対応の list-issues-v1 → 平坦な
+/// list-issues-v0 の順に試す (未知の動詞 → 非ゼロ、で非対応を検知)。
+/// 下位動詞で表現できない照会 (--parent は v0、--cursor は v1 以下) の
+/// フォールバックは空。cursor はプラグインの出力から引数へ還流するため、
+/// 形の不正なものは「続きなし」に落とす。
+pub fn open_issues(
+    bin: &Path,
+    repo: &RepoRef,
+    parent: Option<&str>,
+    cursor: Option<&str>,
+) -> (Vec<(String, String, bool)>, Option<String>) {
     let ns_repo = repo.ns_repo();
+    let mut args = vec!["list-issues-v2", "--repo", ns_repo.as_str()];
+    if let Some(parent) = parent {
+        args.extend(["--parent", parent]);
+    }
+    if let Some(cursor) = cursor {
+        args.extend(["--cursor", cursor]);
+    }
+    if let Some(page) = call(bin, &args) {
+        if let Some(items) = page["issues"].as_array() {
+            let next_cursor = page["next_cursor"]
+                .as_str()
+                .filter(|c| domain::is_valid_cursor(c))
+                .map(str::to_owned);
+            return (issue_items(items, true), next_cursor);
+        }
+    }
+    if cursor.is_some() {
+        return (Vec::new(), None);
+    }
+
     let mut args = vec!["list-issues-v1", "--repo", ns_repo.as_str()];
     if let Some(parent) = parent {
         args.extend(["--parent", parent]);
     }
     if let Some(items) = call(bin, &args).and_then(|v| v.as_array().cloned()) {
-        return issue_items(&items, true);
+        return (issue_items(&items, true), None);
     }
     if parent.is_some() {
-        return Vec::new();
+        return (Vec::new(), None);
     }
-    call(bin, &["list-issues-v0", "--repo", &ns_repo])
+
+    let items = call(bin, &["list-issues-v0", "--repo", &ns_repo])
         .and_then(|v| v.as_array().cloned())
         .map(|items| issue_items(&items, false))
-        .unwrap_or_default()
+        .unwrap_or_default();
+    (items, None)
 }
 
 fn issue_items(items: &[Value], hierarchical: bool) -> Vec<(String, String, bool)> {

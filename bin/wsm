@@ -217,51 +217,64 @@ _pick_repo() {
   fi
 }
 
-# Step 3: Issue / ワークスペース選択 (階層対応)
+# Step 3: Issue / ワークスペース選択 (階層 + ページング対応)
 # has_children (▸) の Issue を選ぶと子 Issue の一覧に降りる。子の階層には
 # 「(この Issue を開く)」と「.. 戻る」の項目を出す。階層は選択 UX だけの
 # 概念で、選ばれた Issue id の扱い (worktree・セッション) は平坦なまま。
+# server が next_cursor を返した階層には「… さらに読み込む」を出し、
+# 選ばれたら続きのページを取得して同じ階層に足す。
 _pick_issue() {
   local ns_repo=$1
   local TAB=$'\t'
   local -a parents=()  # ドリルダウンの親スタック
+  local -a acc=()      # 現在の階層で読み込み済みの行
+  local cursor=""      # 続きの cursor (空 = なし)
+  local fetch_cursor="" need_fetch=1
 
   while true; do
-    local -a query=(list-issues --repo "$ns_repo")
-    local header="$ns_repo"
-    if (( ${#parents[@]} > 0 )); then
-      query+=(--parent "${parents[-1]}")
-      header+="  #${(j: > #:)parents}"
+    if (( need_fetch )); then
+      local -a query=(list-issues --repo "$ns_repo")
+      (( ${#parents[@]} > 0 )) && query+=(--parent "${parents[-1]}")
+      [[ -n "$fetch_cursor" ]] && query+=(--cursor "$fetch_cursor")
+      local json=$(_server "${query[@]}")
+
+      while IFS=$'\t' read -r id title active closed dc children; do
+        [[ -n "$id" ]] || continue
+        # 子の有無 (▸) は行頭に出す。行末だと長いタイトルの切り詰めで見えなくなる
+        local marker="  "
+        [[ "$children" == "true" ]] && marker="▸ "
+        local display=""
+        if [[ "$id" == "main" ]]; then
+          display="${marker}main  (ディスカッション・調査用)"
+        else
+          display="${marker}#${id}  ${title}"
+        fi
+        if [[ "$closed" == "true" ]]; then
+          display+="  ✔ closed"
+        fi
+        if [[ "$active" == "true" ]]; then
+          display+="  ● active"
+        fi
+        local dc_disp=$(_dc_indicator "$dc")
+        [[ -n "$dc_disp" ]] && display+="  ${dc_disp}"
+        acc+=("${id}${TAB}${display}${TAB}${children}")
+      done < <(printf '%s\n' "$json" \
+        | jq -r '.issues[] | "\(.id)\t\(.title)\t\(.active)\t\(.closed)\t\(.devcontainer // "none")\t\(.has_children // false)"')
+
+      cursor=$(printf '%s\n' "$json" | jq -r '.next_cursor // empty')
+      need_fetch=0
+      fetch_cursor=""
     fi
 
-    local json=$(_server "${query[@]}")
+    local header="$ns_repo"
+    (( ${#parents[@]} > 0 )) && header+="  #${(j: > #:)parents}"
     local items=()
     if (( ${#parents[@]} > 0 )); then
       items+=("__self__${TAB}  (この Issue #${parents[-1]} を開く)")
       items+=("__up__${TAB}  ..")
     fi
-    while IFS=$'\t' read -r id title active closed dc children; do
-      [[ -n "$id" ]] || continue
-      # 子の有無 (▸) は行頭に出す。行末だと長いタイトルの切り詰めで見えなくなる
-      local marker="  "
-      [[ "$children" == "true" ]] && marker="▸ "
-      local display=""
-      if [[ "$id" == "main" ]]; then
-        display="${marker}main  (ディスカッション・調査用)"
-      else
-        display="${marker}#${id}  ${title}"
-      fi
-      if [[ "$closed" == "true" ]]; then
-        display+="  ✔ closed"
-      fi
-      if [[ "$active" == "true" ]]; then
-        display+="  ● active"
-      fi
-      local dc_disp=$(_dc_indicator "$dc")
-      [[ -n "$dc_disp" ]] && display+="  ${dc_disp}"
-      items+=("${id}${TAB}${display}${TAB}${children}")
-    done < <(printf '%s\n' "$json" \
-      | jq -r '.[] | "\(.id)\t\(.title)\t\(.active)\t\(.closed)\t\(.devcontainer // "none")\t\(.has_children // false)"')
+    items+=("${acc[@]}")
+    [[ -n "$cursor" ]] && items+=("__more__${TAB}  … さらに読み込む")
 
     local selected=$(printf '%s\n' "${items[@]}" \
       | fzf --with-nth=2 --delimiter=$'\t' --height=40% --reverse --prompt="Issue> " --header="$header")
@@ -276,10 +289,17 @@ _pick_issue() {
         ;;
       __up__)
         parents=("${parents[@]:0:${#parents[@]}-1}")
+        acc=() cursor="" need_fetch=1
+        ;;
+      __more__)
+        fetch_cursor=$cursor
+        cursor=""
+        need_fetch=1
         ;;
       *)
         if [[ "$sel_children" == "true" ]]; then
           parents+=("$sel_id")
+          acc=() cursor="" need_fetch=1
         else
           printf '%s\n' "$sel_id"
           return 0

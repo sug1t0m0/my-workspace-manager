@@ -140,16 +140,21 @@ pub fn list_workspaces(home: &Path) -> CmdResult {
     Ok(Value::Array(rows))
 }
 
-pub fn list_issues(home: &Path, repo: &RepoRef, parent: Option<String>) -> CmdResult {
+pub fn list_issues(
+    home: &Path,
+    repo: &RepoRef,
+    parent: Option<String>,
+    cursor: Option<String>,
+) -> CmdResult {
     let entry = repostore::lookup(home, repo)?;
     let paths = paths(home);
     let managers = settings::session_managers(home);
     let plugin = settings::trackers(home)?.plugin_for(entry.tracker.as_deref())?.map(Path::to_owned);
 
     let active_ids = active_issue_ids(&paths, &entry, &managers);
-    let open_issues = plugin
+    let (open_issues, next_cursor) = plugin
         .as_deref()
-        .map(|bin| tracker::open_issues(bin, repo, parent.as_deref()))
+        .map(|bin| tracker::open_issues(bin, repo, parent.as_deref(), cursor.as_deref()))
         .unwrap_or_default();
 
     let issue_entries = open_issues.iter().map(|(id, title, has_children)| {
@@ -163,10 +168,13 @@ pub fn list_issues(home: &Path, repo: &RepoRef, parent: Option<String>) -> CmdRe
         )
     });
 
-    // 子 Issue の一覧 (--parent): 階層のドリルダウン用のビューで、
-    // main と孤児 worktree はトップレベルにしか出さない
-    if parent.is_some() {
-        return Ok(Value::Array(issue_entries.collect()));
+    // main と孤児 worktree はトップレベルの最初のページにだけ出す
+    // (--parent は階層のドリルダウン、--cursor は続きのページ)
+    if parent.is_some() || cursor.is_some() {
+        return Ok(json!({
+            "issues": issue_entries.collect::<Vec<Value>>(),
+            "next_cursor": next_cursor,
+        }));
     }
 
     let main_entry = issue_entry(
@@ -178,8 +186,8 @@ pub fn list_issues(home: &Path, repo: &RepoRef, parent: Option<String>) -> CmdRe
         false,
     );
 
-    // 孤児 worktree: トップレベルの open 一覧に出てこないがセッションが
-    // 残っている Issue。closed とは限らない (open な子 Issue もここに来る)
+    // 孤児 worktree: 最初のページに出てこないがセッションが残っている Issue。
+    // closed とは限らない (open な子 Issue や後続ページの Issue もここに来る)
     // ため、closed は Tracker の実際の state で埋める
     let open_ids: HashSet<&str> = open_issues.iter().map(|(id, _, _)| id.as_str()).collect();
     let orphan_entries = active_ids
@@ -193,9 +201,13 @@ pub fn list_issues(home: &Path, repo: &RepoRef, parent: Option<String>) -> CmdRe
             issue_entry(id, &title, true, closed, devcontainer::state(repo, id), false)
         });
 
-    Ok(Value::Array(
-        std::iter::once(main_entry).chain(issue_entries).chain(orphan_entries).collect(),
-    ))
+    Ok(json!({
+        "issues": std::iter::once(main_entry)
+            .chain(issue_entries)
+            .chain(orphan_entries)
+            .collect::<Vec<Value>>(),
+        "next_cursor": next_cursor,
+    }))
 }
 
 pub fn list_devcontainer_configs(home: &Path, repo: &RepoRef, id: &WorkspaceId) -> CmdResult {

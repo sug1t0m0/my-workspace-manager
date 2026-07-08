@@ -14,13 +14,14 @@ use serde_json::{json, Value};
 use std::process::{Command, ExitCode};
 use std::time::Duration;
 
-const USAGE: &str = "Usage: wsm-tracker-github-api <list-repo-groups-v0|repo-group-repos-v0|list-issues-v0|list-issues-v1|issue-v0|info-v0>";
+const USAGE: &str = "Usage: wsm-tracker-github-api <list-repo-groups-v0|repo-group-repos-v0|list-issues-v0|list-issues-v1|list-issues-v2|issue-v0|info-v0>";
 
 const PROTOCOL: &[&str] = &[
     "list-repo-groups-v0",
     "repo-group-repos-v0",
     "list-issues-v0",
     "list-issues-v1",
+    "list-issues-v2",
     "issue-v0",
     "info-v0",
 ];
@@ -45,7 +46,20 @@ fn run(args: &[String]) -> Result<Value, String> {
         "list-repo-groups-v0" => list_repo_groups(),
         "repo-group-repos-v0" => repo_group_repos(&flag(rest, "--group")?),
         "list-issues-v0" => list_issues_flat(&flag(rest, "--repo")?),
-        "list-issues-v1" => list_issues(&flag(rest, "--repo")?, optional_flag(rest, "--parent")),
+        "list-issues-v1" => {
+            // v1 は 1 ページ目だけの互換ビュー (配列で返す)
+            let page = list_issues_page(
+                &flag(rest, "--repo")?,
+                optional_flag(rest, "--parent"),
+                None,
+            )?;
+            Ok(page["issues"].clone())
+        }
+        "list-issues-v2" => list_issues_page(
+            &flag(rest, "--repo")?,
+            optional_flag(rest, "--parent"),
+            optional_flag(rest, "--cursor"),
+        ),
         "issue-v0" => issue(&flag(rest, "--repo")?, &flag(rest, "--id")?),
         "info-v0" => Ok(info()),
         _ => Err(USAGE.to_owned()),
@@ -102,48 +116,39 @@ fn repo_group_repos(group: &str) -> Result<Value, String> {
 
 /// open な Issue の平坦な一覧 (v0。階層を知らない古い wsm 向け)。
 fn list_issues_flat(repo: &str) -> Result<Value, String> {
-    let nodes = open_issue_nodes(repo)?;
+    let (nodes, _) = open_issue_page(repo, None)?;
     Ok(Value::Array(nodes.iter().filter_map(|n| issue_item(n, false)).collect()))
 }
 
-/// open な Issue (v1)。--parent 省略時は親を持たないもの、指定時はその子。
-fn list_issues(repo: &str, parent: Option<String>) -> Result<Value, String> {
-    match parent {
+/// open な Issue の 1 ページ (v2)。--parent 省略時は親を持たないもの、
+/// 指定時はその open な子。1 ページの件数 (50) はこのプラグインの裁量。
+fn list_issues_page(
+    repo: &str,
+    parent: Option<String>,
+    cursor: Option<String>,
+) -> Result<Value, String> {
+    let (nodes, next_cursor, top_level_only) = match parent {
         None => {
-            let nodes = open_issue_nodes(repo)?;
-            Ok(Value::Array(
-                nodes
-                    .iter()
-                    .filter(|n| n["parent"].is_null())
-                    .filter_map(|n| issue_item(n, true))
-                    .collect(),
-            ))
+            let (nodes, next) = open_issue_page(repo, cursor.as_deref())?;
+            (nodes, next, true)
         }
         Some(parent) => {
-            const QUERY: &str = "query($owner: String!, $name: String!, $number: Int!) {
-              repository(owner: $owner, name: $name) {
-                issue(number: $number) {
-                  subIssues(first: 50) { nodes { number title state subIssues(first: 50) { nodes { state } } } }
-                }
-              }
-            }";
-            let (owner, name) = split_repo(repo)?;
-            let number = numeric(&parent, "parent")?;
-            let data =
-                graphql(QUERY, json!({ "owner": owner, "name": name, "number": number }))?;
-            let children = data["repository"]["issue"]["subIssues"]["nodes"]
-                .as_array()
-                .map(|nodes| {
-                    nodes
-                        .iter()
-                        .filter(|n| n["state"].as_str() == Some("OPEN"))
-                        .filter_map(|n| issue_item(n, true))
-                        .collect()
-                })
-                .unwrap_or_default();
-            Ok(Value::Array(children))
+            let (nodes, next) = sub_issue_page(repo, &parent, cursor.as_deref())?;
+            (nodes, next, false)
         }
-    }
+    };
+    let issues: Vec<Value> = nodes
+        .iter()
+        .filter(|n| {
+            if top_level_only {
+                n["parent"].is_null()
+            } else {
+                n["state"].as_str() == Some("OPEN")
+            }
+        })
+        .filter_map(|n| issue_item(n, true))
+        .collect();
+    Ok(json!({ "issues": issues, "next_cursor": next_cursor }))
 }
 
 /// 単一 Issue の {title, state}。state は契約の中立語彙 open / closed。
@@ -195,20 +200,55 @@ fn probe() -> Result<(), String> {
 
 // --- GitHub との会話 ---
 
-/// トップレベル判定に必要な parent と、子 Issue の state 付きの
-/// open Issue ノード。
-fn open_issue_nodes(repo: &str) -> Result<Vec<Value>, String> {
+/// トップレベル判定に必要な parent と、子 Issue の state 付きの open Issue の
+/// 1 ページ。(ノード列, 続きの cursor) を返す。
+fn open_issue_page(repo: &str, cursor: Option<&str>) -> Result<(Vec<Value>, Option<String>), String> {
     // 並びは新しい順 (gh 版と同じ)。GraphQL の issues は無指定だと古い順になる
-    const QUERY: &str = "query($owner: String!, $name: String!) {
+    const QUERY: &str = "query($owner: String!, $name: String!, $cursor: String) {
       repository(owner: $owner, name: $name) {
-        issues(states: OPEN, first: 50, orderBy: { field: CREATED_AT, direction: DESC }) {
+        issues(states: OPEN, first: 50, after: $cursor, orderBy: { field: CREATED_AT, direction: DESC }) {
+          pageInfo { endCursor hasNextPage }
           nodes { number title parent { number } subIssues(first: 50) { nodes { state } } }
         }
       }
     }";
     let (owner, name) = split_repo(repo)?;
-    let data = graphql(QUERY, json!({ "owner": owner, "name": name }))?;
-    Ok(data["repository"]["issues"]["nodes"].as_array().cloned().unwrap_or_default())
+    let data = graphql(QUERY, json!({ "owner": owner, "name": name, "cursor": cursor }))?;
+    Ok(page(&data["repository"]["issues"]))
+}
+
+/// 指定 Issue の子 (sub-issues) の 1 ページ。
+fn sub_issue_page(
+    repo: &str,
+    parent: &str,
+    cursor: Option<&str>,
+) -> Result<(Vec<Value>, Option<String>), String> {
+    const QUERY: &str = "query($owner: String!, $name: String!, $number: Int!, $cursor: String) {
+      repository(owner: $owner, name: $name) {
+        issue(number: $number) {
+          subIssues(first: 50, after: $cursor) {
+            pageInfo { endCursor hasNextPage }
+            nodes { number title state subIssues(first: 50) { nodes { state } } }
+          }
+        }
+      }
+    }";
+    let (owner, name) = split_repo(repo)?;
+    let number = numeric(parent, "parent")?;
+    let data = graphql(
+        QUERY,
+        json!({ "owner": owner, "name": name, "number": number, "cursor": cursor }),
+    )?;
+    Ok(page(&data["repository"]["issue"]["subIssues"]))
+}
+
+/// GraphQL の connection から (ノード列, 続きの cursor) を取り出す。
+fn page(connection: &Value) -> (Vec<Value>, Option<String>) {
+    let nodes = connection["nodes"].as_array().cloned().unwrap_or_default();
+    let next_cursor = (connection["pageInfo"]["hasNextPage"].as_bool() == Some(true))
+        .then(|| connection["pageInfo"]["endCursor"].as_str().map(str::to_owned))
+        .flatten();
+    (nodes, next_cursor)
 }
 
 fn issue_item(node: &Value, hierarchical: bool) -> Option<Value> {

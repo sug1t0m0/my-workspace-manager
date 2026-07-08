@@ -167,3 +167,12 @@ pub fn is_valid_host(value: &str) -> bool {
     chars.next().is_some_and(|c| c.is_ascii_alphanumeric())
         && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-'))
 }
+
+/// cursor: プラグインが発行する不透明なページング token。プラグインの出力から
+/// 引数へ還流するため、形を検証する (base64 系 + URL safe。先頭は英数で
+/// オプション注入を防ぐ)。
+pub fn is_valid_cursor(value: &str) -> bool {
+    let mut chars = value.chars();
+    chars.next().is_some_and(|c| c.is_ascii_alphanumeric())
+        && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '/' | '=' | '_' | '-'))
+}

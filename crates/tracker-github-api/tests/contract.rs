@@ -261,6 +261,61 @@ fn repo_groups_filter_closed_and_respect_owner_env() {
 }
 
 #[test]
+fn list_issues_v2_pages_with_cursor() {
+    // Arrange: 続きがあるページ。cursor は pageInfo.endCursor から
+    let server = ApiServer::serve(vec![(
+        "",
+        json!({ "data": { "repository": { "issues": {
+            "pageInfo": { "endCursor": "abc123==", "hasNextPage": true },
+            "nodes": [
+                { "number": 100, "title": "Newest", "parent": null, "subIssues": { "nodes": [] } },
+            ],
+        } } } })
+        .to_string(),
+    )]);
+    let env = TestEnv::new();
+
+    // Act
+    let out = env.run(&server.url, &["list-issues-v2", "--repo", "owner/repo", "--cursor", "prev=="]);
+
+    // Assert: {issues, next_cursor} で返し、受けた cursor は after 変数で渡す
+    assert_eq!(out.status, Some(0));
+    assert_eq!(
+        out.stdout_json(),
+        json!({
+            "issues": [{ "id": "100", "title": "Newest", "has_children": false }],
+            "next_cursor": "abc123==",
+        })
+    );
+    assert!(
+        server.requests()[0].contains(r#""cursor":"prev==""#),
+        "cursor must be forwarded: {}",
+        server.requests()[0]
+    );
+}
+
+#[test]
+fn list_issues_v2_last_page_has_no_cursor() {
+    // Arrange: hasNextPage が false なら endCursor があっても続きなし
+    let server = ApiServer::serve(vec![(
+        "",
+        json!({ "data": { "repository": { "issues": {
+            "pageInfo": { "endCursor": "zzz", "hasNextPage": false },
+            "nodes": [],
+        } } } })
+        .to_string(),
+    )]);
+    let env = TestEnv::new();
+
+    // Act
+    let out = env.run(&server.url, &["list-issues-v2", "--repo", "owner/repo"]);
+
+    // Assert
+    assert_eq!(out.status, Some(0));
+    assert_eq!(out.stdout_json(), json!({ "issues": [], "next_cursor": null }));
+}
+
+#[test]
 fn issue_maps_state_to_neutral_vocabulary() {
     // Arrange
     let server = ApiServer::serve(vec![(
@@ -366,7 +421,7 @@ fn unknown_verb_fails_with_usage() {
     let env = TestEnv::new();
 
     // Act
-    let out = env.run("http://127.0.0.1:1", &["list-issues-v2"]);
+    let out = env.run("http://127.0.0.1:1", &["list-issues-v3"]);
 
     // Assert
     assert_eq!(out.status, Some(1));

@@ -479,16 +479,20 @@ remove は逆順で破棄する(Terminal は管理外なので対象外):
 [{"ns_repo": "owner/repo", "active_count": 0}]
 ```
 
-`list-issues --repo <ns_repo> [--parent <id>]`
-→ `--parent` 省略時は `main` + トップレベルの open Issue + 孤児 worktree
-(トップレベル一覧に出ないがセッションが残っているもの。open な子 Issue も
-ここに来るため、`closed` は Tracker の実際の state。並びは worktree 一覧順)。
-`--parent` 指定時は子 Issue のみ (main・孤児なし。階層のドリルダウン用)。
-`has_children` が子 Issue の有無 (v0 しか知らないプラグインでは常に false)。
-RepoStore で解決できないリポジトリはエラー (`repository not found` /
-`ambiguous repository`。open / list-devcontainer-configs も同様)。
+`list-issues --repo <ns_repo> [--parent <id>] [--cursor <token>]`
+→ open な Issue の 1 ページ。`main` + 孤児 worktree (一覧の最初のページに
+出ないがセッションが残っているもの。open な子 Issue や後続ページの Issue も
+ここに来るため、`closed` は Tracker の実際の state。並びは worktree 一覧順)
+は**トップレベルの最初のページにだけ**含まれる。`--parent` 指定時は
+子 Issue のみ (階層のドリルダウン用)、`--cursor` 指定時は続きのページ。
+`next_cursor` が非 null なら続きがある (ページの件数と並びはプラグインの
+責務)。`has_children` が子 Issue の有無 (v0 しか知らないプラグインでは
+常に false)。RepoStore で解決できないリポジトリはエラー
+(`repository not found` / `ambiguous repository`。open /
+list-devcontainer-configs も同様)。
 ```json
-[{"id": "main", "title": "...", "active": false, "closed": false, "devcontainer": "none", "has_children": false}]
+{"issues": [{"id": "main", "title": "...", "active": false, "closed": false, "devcontainer": "none", "has_children": false}],
+ "next_cursor": null}
 ```
 
 `list-workspaces`
@@ -561,15 +565,17 @@ UI のマネージャー選択はこれを使う (選択肢のハードコード
     先頭 `-` の禁止でオプション注入を、`.` `/` の禁止でトラバーサルを弾く
   - `group`: issue と同じ不透明な id の文法(`none` は list-repos の特別値)
   - `parent`: issue と同じ文法。番兵値 `main` は親になれない
+  - `cursor`: 英数と `+/=_-`(先頭は英数)。プラグイン発行の不透明な token
   - `--config`: 検証しない(ローカルパスを許容する)
   - 空文字の値は未指定と同じ扱い(`--repo ""` は `--repo required`)
   - 同名フラグの重複は後勝ち
   - 違反時は `{"error":"--<flag> required"}` または
     `{"error":"Invalid <name>: <value>"}` を stderr に出して非ゼロ終了
 - 既知の制約
-  - open な Issue の取得件数はプラグインの責務 (公式 GitHub プラグインは
-    50 件まで)。かつての「タブを含むタイトル非対応」はプラグイン契約
-    (JSON 1 ドキュメント) への移行で解消した
+  - open な Issue の 1 ページの件数と並びはプラグインの責務。続きは
+    `list-issues-v2` のページングで取れる (api 版は 1 ページ 50 件・
+    新しい順。v2 非対応の gh 版は先頭 50 件のみ)。かつての「タブを含む
+    タイトル非対応」はプラグイン契約 (JSON 1 ドキュメント) への移行で解消した
 
 ## Tracker プラグイン契約
 
@@ -600,12 +606,13 @@ wsm 本体のリリースを要しないこと、が目的)。
 |---|---|
 | `list-repo-groups-v0` | `[{"id": "...", "title": "..."}]` — open な repo-group。UI の表示順で返す |
 | `repo-group-repos-v0 --group <id>` | `["ns/repo", ...]` — repo-group 所属のリポジトリ |
-| `list-issues-v1 --repo <ns/repo> [--parent <id>]` | `[{"id": "...", "title": "...", "has_children": bool}]` — open な Issue。UI の表示順で返す |
-| `list-issues-v0 --repo <ns/repo>` | `[{"id": "...", "title": "..."}]` — v1 非対応プラグイン向けのフォールバック先 (平坦な一覧) |
+| `list-issues-v2 --repo <ns/repo> [--parent <id>] [--cursor <token>]` | `{"issues": [{"id", "title", "has_children"}], "next_cursor": "<token>" \| null}` — open な Issue の 1 ページ |
+| `list-issues-v1 --repo <ns/repo> [--parent <id>]` | `[{"id": "...", "title": "...", "has_children": bool}]` — v2 非対応プラグイン向け (ページングなしの全件) |
+| `list-issues-v0 --repo <ns/repo>` | `[{"id": "...", "title": "..."}]` — v1 非対応プラグイン向け (平坦な一覧) |
 | `issue-v0 --repo <ns/repo> --id <id>` | `{"title": "...", "state": "open" \| "closed"}` — 単一 Issue |
 | `info-v0` | `{"name": "...", "protocol": ["<動詞>", ...], "ready": true\|false, "diagnosis": "..."}` — 自己診断 |
 
-Issue の階層 (`list-issues-v1`):
+Issue の階層 (`--parent` / `has_children`):
 
 - `--parent` 省略時は親を持たない open Issue、指定時はその子の open Issue を
   返す。`has_children` (省略時 false) が子を持つことを示し、UI はこれで
@@ -615,9 +622,24 @@ Issue の階層 (`list-issues-v1`):
   導出は平坦な id に対して同じ)
 - 階層概念のないトラッカーは `has_children` を常に false にすれば、
   平坦な一覧と同じ UX に退化する
-- wsm は v1 を先に呼び、非対応 (未知の動詞 → 非ゼロ) なら `list-issues-v0`
-  に落ちて `has_children` を false で補う。v0 は階層を表現できないため
-  `--parent` 指定時のフォールバックは空
+
+ページング (`list-issues-v2` の `--cursor` / `next_cursor`):
+
+- **1 ページの件数はプラグインの責務** (契約は決めない)。続きがあるときは
+  `next_cursor` に不透明な token を返し、wsm はそれを次の呼び出しの
+  `--cursor` にそのまま渡す。UI は「… さらに読み込む」で 1 ページずつ足す
+- ページングしない自由もある: `next_cursor` を常に null にすれば
+  「プラグインが決めた件数の単一ページ」になる。v2 自体を実装しない自由も
+  ある (下記フォールバック)
+- cursor はプラグインの出力から引数へ還流するため、wsm が形を検証する
+  (英数と `+/=_-`、先頭は英数。違反は「続きなし」に落とす)
+
+wsm は v2 → v1 → v0 の順に試す (未知の動詞 → 非ゼロ、で非対応を検知):
+
+- v1 へのフォールバックは `has_children` 付きの全件 (ページングなし)、
+  v0 へのフォールバックは平坦な一覧で `has_children` は false に補われる
+- 下位動詞で表現できない照会のフォールバックは空 (`--parent` は v0 で、
+  `--cursor` は v1 以下で表現できない)
 
 `info-v0` の意味論 (他の動詞と違う点):
 

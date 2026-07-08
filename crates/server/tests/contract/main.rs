@@ -176,6 +176,8 @@ fn parameter_shapes_are_validated() {
         // parent: issue と同じ文法。番兵値 main は親になれない
         (&["list-issues", "--repo", "owner/repo", "--parent", "../4"], "Invalid parent: ../4"),
         (&["list-issues", "--repo", "owner/repo", "--parent", "main"], "Invalid parent: main"),
+        // cursor: プラグイン発行の不透明な token (base64 系 + URL safe)
+        (&["list-issues", "--repo", "owner/repo", "--cursor", "a;b"], "Invalid cursor: a;b"),
         // group: issue と同じ不透明な id の文法
         (&["list-repos", "--group", "5;x"], "Invalid group: 5;x"),
         (&["list-repos", "--group", "-5"], "Invalid group: -5"),
@@ -220,7 +222,7 @@ fn dotted_repo_names_stay_valid() {
 
     // Assert
     assert_eq!(out.status, Some(0));
-    assert_eq!(out.stdout_json()[0]["id"], "main");
+    assert_eq!(out.stdout_json()["issues"][0]["id"], "main");
 }
 
 #[test]
@@ -463,9 +465,9 @@ fn list_issues_degrades_to_main_when_no_tracker_configured() {
     assert_eq!(out.status, Some(0));
     assert_eq!(
         out.stdout_json(),
-        json!([
+        json!({ "issues": [
             { "id": "main", "title": "main", "active": false, "closed": false, "devcontainer": "none", "has_children": false },
-        ])
+        ], "next_cursor": null })
     );
 }
 
@@ -592,10 +594,10 @@ fn invalid_issue_ids_from_plugin_are_dropped() {
     assert_eq!(out.status, Some(0));
     assert_eq!(
         out.stdout_json(),
-        json!([
+        json!({ "issues": [
             { "id": "main", "title": "main", "active": false, "closed": false, "devcontainer": "none", "has_children": false },
             { "id": "42", "title": "Ok", "active": false, "closed": false, "devcontainer": "none", "has_children": false },
-        ])
+        ], "next_cursor": null })
     );
 }
 
@@ -669,11 +671,11 @@ fn list_issues_combines_main_and_open_issues() {
     assert_eq!(out.status, Some(0));
     assert_eq!(
         out.stdout_json(),
-        json!([
+        json!({ "issues": [
             { "id": "main", "title": "main", "active": false, "closed": false, "devcontainer": "none", "has_children": false },
             { "id": "42", "title": "Fix bug", "active": false, "closed": false, "devcontainer": "none", "has_children": true },
             { "id": "43", "title": "Add feature", "active": false, "closed": false, "devcontainer": "none", "has_children": false },
-        ])
+        ], "next_cursor": null })
     );
 }
 
@@ -694,16 +696,70 @@ fn list_issues_falls_back_to_v0_for_legacy_plugins() {
     assert_eq!(out.status, Some(0));
     assert_eq!(
         out.stdout_json(),
-        json!([
+        json!({ "issues": [
             { "id": "main", "title": "main", "active": false, "closed": false, "devcontainer": "none", "has_children": false },
             { "id": "42", "title": "Fix bug", "active": false, "closed": false, "devcontainer": "none", "has_children": false },
-        ])
+        ], "next_cursor": null })
     );
     let invocations = env.invocations();
     assert!(
         invocations.contains(&"tracker list-issues-v1 --repo owner/repo".to_owned()),
         "v1 must be tried first: {invocations:?}"
     );
+}
+
+#[test]
+fn list_issues_pages_through_v2_plugins() {
+    // Arrange: v2 対応プラグイン。1 ページ目に続きの cursor がある
+    let env = TestEnv::new();
+    env.stub("^docker ps -a", "")
+        .stub(
+            "^tracker list-issues-v2 --repo owner/repo$",
+            r#"{"issues":[{"id":"42","title":"Newest"}],"next_cursor":"abc=="}"#,
+        )
+        .stub(
+            "^tracker list-issues-v2 --repo owner/repo --cursor abc==$",
+            r#"{"issues":[{"id":"41","title":"Older"}],"next_cursor":null}"#,
+        );
+
+    // Act
+    let first = env.run(&["list-issues", "--repo", "owner/repo"]);
+    let second = env.run(&["list-issues", "--repo", "owner/repo", "--cursor", "abc=="]);
+
+    // Assert: 続きのページには main も孤児も出ない
+    assert_eq!(first.status, Some(0));
+    assert_eq!(
+        first.stdout_json(),
+        json!({ "issues": [
+            { "id": "main", "title": "main", "active": false, "closed": false, "devcontainer": "none", "has_children": false },
+            { "id": "42", "title": "Newest", "active": false, "closed": false, "devcontainer": "none", "has_children": false },
+        ], "next_cursor": "abc==" })
+    );
+    assert_eq!(second.status, Some(0));
+    assert_eq!(
+        second.stdout_json(),
+        json!({ "issues": [
+            { "id": "41", "title": "Older", "active": false, "closed": false, "devcontainer": "none", "has_children": false },
+        ], "next_cursor": null })
+    );
+}
+
+#[test]
+fn invalid_cursor_from_plugin_is_dropped() {
+    // Arrange: プラグインの出力は信頼しない入力。cursor も形を検証し、
+    // 不正なら「続きなし」に落とす (引数へ還流するため)
+    let env = TestEnv::new();
+    env.stub("^docker ps -a", "").stub(
+        "^tracker list-issues-v2 --repo owner/repo$",
+        r#"{"issues":[],"next_cursor":"bad cursor; rm"}"#,
+    );
+
+    // Act
+    let out = env.run(&["list-issues", "--repo", "owner/repo"]);
+
+    // Assert
+    assert_eq!(out.status, Some(0));
+    assert_eq!(out.stdout_json()["next_cursor"], serde_json::Value::Null);
 }
 
 #[test]
@@ -722,10 +778,10 @@ fn list_issues_with_parent_lists_children_only() {
     assert_eq!(out.status, Some(0));
     assert_eq!(
         out.stdout_json(),
-        json!([
+        json!({ "issues": [
             { "id": "421", "title": "Child A", "active": false, "closed": false, "devcontainer": "none", "has_children": true },
             { "id": "422", "title": "Child B", "active": false, "closed": false, "devcontainer": "none", "has_children": false },
-        ])
+        ], "next_cursor": null })
     );
 }
 
@@ -760,12 +816,12 @@ fn list_issues_shows_orphaned_worktrees_with_real_state_in_worktree_order() {
     assert_eq!(out.status, Some(0));
     assert_eq!(
         out.stdout_json(),
-        json!([
+        json!({ "issues": [
             { "id": "main", "title": "main", "active": false, "closed": false, "devcontainer": "none", "has_children": false },
             { "id": "43", "title": "Other work", "active": false, "closed": false, "devcontainer": "none", "has_children": false },
             { "id": "41", "title": "Old bug", "active": true, "closed": true, "devcontainer": "none", "has_children": false },
             { "id": "42", "title": "Deep child", "active": true, "closed": false, "devcontainer": "none", "has_children": false },
-        ])
+        ], "next_cursor": null })
     );
 }
 
@@ -791,11 +847,11 @@ fn list_issues_aggregates_devcontainer_states() {
     assert_eq!(out.status, Some(0));
     assert_eq!(
         out.stdout_json(),
-        json!([
+        json!({ "issues": [
             { "id": "main", "title": "main", "active": false, "closed": false, "devcontainer": "none", "has_children": false },
             { "id": "42", "title": "Fix bug", "active": false, "closed": false, "devcontainer": "stopped", "has_children": false },
             { "id": "43", "title": "Add feature", "active": false, "closed": false, "devcontainer": "running", "has_children": false },
-        ])
+        ], "next_cursor": null })
     );
 }
 
@@ -814,7 +870,7 @@ fn list_issues_preserves_backslash_sequences_in_titles() {
     // Assert
     assert_eq!(out.status, Some(0));
     assert_eq!(
-        out.stdout_json()[1],
+        out.stdout_json()["issues"][1],
         json!({ "id": "42", "title": "Keep \\t literal", "active": false, "closed": false, "devcontainer": "none", "has_children": false })
     );
 }
@@ -1425,10 +1481,10 @@ fn list_issues_marks_herdr_workspace_as_active() {
     assert_eq!(out.status, Some(0));
     assert_eq!(
         out.stdout_json(),
-        json!([
+        json!({ "issues": [
             { "id": "main", "title": "main", "active": true, "closed": false, "devcontainer": "none", "has_children": false },
             { "id": "42", "title": "Fix bug", "active": true, "closed": false, "devcontainer": "none", "has_children": false },
-        ])
+        ], "next_cursor": null })
     );
 }
 
@@ -1769,9 +1825,9 @@ fn list_issues_degrades_to_main_when_tracker_fails() {
     assert_eq!(out.status, Some(0));
     assert_eq!(
         out.stdout_json(),
-        json!([
+        json!({ "issues": [
             { "id": "main", "title": "main", "active": false, "closed": false, "devcontainer": "none", "has_children": false },
-        ])
+        ], "next_cursor": null })
     );
     assert_eq!(out.stderr, "");
 }

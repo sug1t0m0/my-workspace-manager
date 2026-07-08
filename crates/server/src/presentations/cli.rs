@@ -31,9 +31,12 @@ fn run(args: &[String]) -> CmdResult {
     match subcmd.as_str() {
         "list-repo-groups" => usecases::list_repo_groups(&home),
         "list-repos" => usecases::list_repos(&home, flag_value(rest, "--group")),
-        "list-issues" => {
-            usecases::list_issues(&home, &required_repo(rest)?, optional_parent(rest)?)
-        }
+        "list-issues" => usecases::list_issues(
+            &home,
+            &required_repo(rest)?,
+            optional_parent(rest)?,
+            optional_cursor(rest)?,
+        ),
         "list-workspaces" => usecases::list_workspaces(&home),
         "list-session-managers" => usecases::list_session_managers(&home),
         "list-trackers" => usecases::list_trackers(&home),
@@ -95,5 +98,14 @@ fn optional_parent(args: &[String]) -> Result<Option<String>, String> {
         None => Ok(None),
         Some(value) if value != "main" && domain::is_valid_issue(&value) => Ok(Some(value)),
         Some(value) => Err(format!("Invalid parent: {value}")),
+    }
+}
+
+/// --cursor (任意) の検証。プラグイン発行の不透明な token (形のみ検証)。
+fn optional_cursor(args: &[String]) -> Result<Option<String>, String> {
+    match flag_value(args, "--cursor") {
+        None => Ok(None),
+        Some(value) if domain::is_valid_cursor(&value) => Ok(Some(value)),
+        Some(value) => Err(format!("Invalid cursor: {value}")),
     }
 }
