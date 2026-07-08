@@ -12,13 +12,7 @@ tmux_path = "/opt/homebrew/bin/tmux"
 # 既定のセッションマネージャー (未指定なら列挙の先頭)
 default_session_manager = "herdr"
 
-# Tracker プラグインの列挙 (docs/wsm.md「Tracker プラグイン契約」)。
-# 列挙したものだけが存在する (フォールバックはない)。
-[[tracker]]
-name = "github"
-path = "~/.local/bin/wsm-tracker-github"
-
-# 既定のトラッカー (未指定なら列挙の先頭)
+# 既定のトラッカー (未指定なら [[tracker]] の列挙の先頭)
 # default_tracker = "github"
 
 # フォールバック devcontainer 設定 (リポジトリに devcontainer.json がないときの既定)
@@ -29,6 +23,16 @@ default_devcontainer_config = "/path/to/your/default/.devcontainer/devcontainer.
 
 # 🐳 ウィンドウで docker exec するシェル (既定: zsh)
 # devcontainer_shell = "zsh"
+
+# --- テーブルは末尾にまとめる ---
+# TOML の意味論上、[[...]] テーブルより後ろに置いたトップレベルキーは
+# テーブルのキーと解釈されるため、以降にトップレベルキーを足さないこと。
+
+# Tracker プラグインの列挙 (docs/wsm.md「Tracker プラグイン契約」)。
+# 列挙したものだけが存在する (フォールバックはない)。
+[[tracker]]
+name = "github"
+path = "~/.local/bin/wsm-tracker-github"
 
 # ghq 管理外のリポジトリの登録 (複数可)。識別子は <ns>/<name> になり、
 # worktree は <worktree_root>/<host>/<ns>/<name>/<id> に作られる (ghq のものと共通)。
