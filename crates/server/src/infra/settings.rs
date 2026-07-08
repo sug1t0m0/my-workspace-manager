@@ -184,11 +184,22 @@ pub struct Trackers {
 }
 
 impl Trackers {
+    /// 設定順の (name, path) の列 (list-trackers 用)。
+    pub fn entries(&self) -> impl Iterator<Item = (&str, &Path)> {
+        self.entries.iter().map(|(name, path)| (name.as_str(), path.as_path()))
+    }
+
+    /// 既定トラッカー名 (default_tracker > 列挙の先頭)。
+    pub fn default_name(&self) -> Option<&str> {
+        self.default.as_deref().or(self.entries.first().map(|(n, _)| n.as_str()))
+    }
+
     /// 既定トラッカーのプラグイン (プロジェクト照会などリポジトリ非依存の
     /// 呼び出しに使う)。未設定は設定誤りとして表面化させる。
     pub fn default_plugin(&self) -> Result<&Path, String> {
-        self.plugin_of(self.default.as_deref().or(self.entries.first().map(|(n, _)| n.as_str()))
-            .ok_or("no tracker configured (add [[tracker]] to config.toml)")?)
+        self.plugin_of(
+            self.default_name().ok_or("no tracker configured (add [[tracker]] to config.toml)")?,
+        )
     }
 
     /// リポジトリの選択 (RepoEntry.tracker) からプラグインを解決する。

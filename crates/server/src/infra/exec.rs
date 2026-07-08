@@ -62,7 +62,8 @@ pub fn which(cmd: &str) -> Option<PathBuf> {
     })
 }
 
-fn is_executable(path: &std::path::Path) -> bool {
+/// パスが実行ファイルとして存在するか (list-trackers の installed 判定に使う)。
+pub fn is_executable(path: &std::path::Path) -> bool {
     use std::os::unix::fs::PermissionsExt;
     path.metadata()
         .map(|m| m.is_file() && m.permissions().mode() & 0o111 != 0)

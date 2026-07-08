@@ -223,6 +223,67 @@ fn gh_failure_is_nonzero_without_partial_json() {
 }
 
 #[test]
+fn info_reports_ready_when_scopes_include_read_project() {
+    // Arrange: gh api user -i はヘッダ + JSON 本文を返す
+    let env = TestEnv::new();
+    env.stub(
+        "^gh api user -i$",
+        "HTTP/2.0 200 OK\nX-Oauth-Scopes: gist, read:org, read:project, repo\n\n{\"login\":\"me\"}\n",
+    );
+
+    // Act
+    let out = env.run(&["info-v0"]);
+
+    // Assert
+    assert_eq!(out.status, Some(0));
+    let v = out.stdout_json();
+    assert_eq!(v["name"], "github");
+    assert_eq!(v["ready"], true);
+    assert_eq!(v["diagnosis"], serde_json::Value::Null);
+    assert!(
+        v["protocol"].as_array().is_some_and(|p| p.iter().any(|s| s == "info-v0")),
+        "protocol must enumerate supported verbs: {v}"
+    );
+}
+
+#[test]
+fn info_reports_missing_read_project_scope_with_fix() {
+    // Arrange: ログイン済みだがトークンに read:project がない
+    // (プロジェクト照会が黙って空になる、実際に起きた事故のケース)
+    let env = TestEnv::new();
+    env.stub(
+        "^gh api user -i$",
+        "HTTP/2.0 200 OK\nX-Oauth-Scopes: gist, repo\n\n{\"login\":\"me\"}\n",
+    );
+
+    // Act
+    let out = env.run(&["info-v0"]);
+
+    // Assert: ready:false のデータとして返す (info 自体は成功)
+    assert_eq!(out.status, Some(0));
+    let v = out.stdout_json();
+    assert_eq!(v["ready"], false);
+    let diagnosis = v["diagnosis"].as_str().expect("diagnosis must explain the problem");
+    assert!(diagnosis.contains("read:project"), "unexpected diagnosis: {diagnosis}");
+    assert!(diagnosis.contains("gh auth refresh"), "diagnosis must include the fix: {diagnosis}");
+}
+
+#[test]
+fn info_reports_unready_when_gh_fails() {
+    // Arrange: gh は未スタブ → 起動失敗相当 (未ログイン等)
+    let env = TestEnv::new();
+
+    // Act
+    let out = env.run(&["info-v0"]);
+
+    // Assert: 使えない状態も ready:false のデータ (非ゼロ終了にしない)
+    assert_eq!(out.status, Some(0));
+    let v = out.stdout_json();
+    assert_eq!(v["ready"], false);
+    assert!(v["diagnosis"].is_string(), "diagnosis must be present: {v}");
+}
+
+#[test]
 fn unknown_verb_fails_with_usage() {
     // Arrange: 前方互換の逃げ道 (新しい wsm が新動詞を呼んだときの見え方)
     let env = TestEnv::new();

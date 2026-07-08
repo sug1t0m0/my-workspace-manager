@@ -10,7 +10,7 @@ mod harness;
 use harness::TestEnv;
 use serde_json::json;
 
-const USAGE_ERROR: &str = "Usage: wsm-server <list-projects|list-repos|list-issues|list-workspaces|list-devcontainer-configs|list-session-managers|open|remove>";
+const USAGE_ERROR: &str = "Usage: wsm-server <list-projects|list-repos|list-issues|list-workspaces|list-devcontainer-configs|list-session-managers|list-trackers|open|remove>";
 
 // --- ディスパッチ ---
 
@@ -483,6 +483,94 @@ fn repo_with_unknown_tracker_name_is_a_config_error() {
     // Assert
     assert_eq!(out.status, Some(1));
     assert_eq!(out.stderr_json(), json!({ "error": "tracker not configured: jira" }));
+}
+
+#[test]
+fn list_trackers_reports_installed_and_ready_state() {
+    // Arrange: フェイクの tracker は実在する実行ファイル。info-v0 が自己診断を返す
+    let env = TestEnv::new();
+    env.stub(
+        "^tracker info-v0$",
+        r#"{"name":"fake","ready":true,"protocol":["list-issues-v0","info-v0"]}"#,
+    );
+
+    // Act
+    let out = env.run(&["list-trackers"]);
+
+    // Assert
+    assert_eq!(out.status, Some(0));
+    assert_eq!(
+        out.stdout_json(),
+        json!([{
+            "name": "fake",
+            "path": format!("{}/tracker", env.fakes_dir_str()),
+            "default": true,
+            "installed": true,
+            "ready": true,
+            "diagnosis": null,
+            "protocol": ["list-issues-v0", "info-v0"],
+        }])
+    );
+}
+
+#[test]
+fn list_trackers_reports_unready_with_diagnosis() {
+    // Arrange: インストール済みだが使えない (認証切れ等)。診断が透過する
+    let env = TestEnv::new();
+    env.stub(
+        "^tracker info-v0$",
+        r#"{"ready":false,"diagnosis":"gh: missing scope read:project"}"#,
+    );
+
+    // Act
+    let out = env.run(&["list-trackers"]);
+
+    // Assert
+    assert_eq!(out.status, Some(0));
+    let v = &out.stdout_json()[0];
+    assert_eq!(v["installed"], true);
+    assert_eq!(v["ready"], false);
+    assert_eq!(v["diagnosis"], "gh: missing scope read:project");
+}
+
+#[test]
+fn list_trackers_reports_missing_binary_and_info_unsupported() {
+    // Arrange: 実在しないパスのトラッカーと、info-v0 非対応 (未スタブ → 非ゼロ) の
+    // トラッカーを列挙する
+    let env = TestEnv::new();
+    let config = format!(
+        "{}{}[[tracker]]\nname = \"jira\"\npath = \"~/no/such/plugin\"\n",
+        env.managers_config(&["tmux", "herdr"]),
+        env.tracker_config()
+    );
+    env.write_home(".config/wsm/config.toml", &config);
+
+    // Act
+    let out = env.run(&["list-trackers"]);
+
+    // Assert: info 非対応は ready 不明 (null)、実在しないものは installed:false
+    assert_eq!(out.status, Some(0));
+    let v = out.stdout_json();
+    assert_eq!(v[0]["name"], "fake");
+    assert_eq!(v[0]["installed"], true);
+    assert_eq!(v[0]["ready"], serde_json::Value::Null);
+    assert_eq!(v[1]["name"], "jira");
+    assert_eq!(v[1]["installed"], false);
+    assert_eq!(v[1]["ready"], serde_json::Value::Null);
+}
+
+#[test]
+fn list_trackers_returns_empty_array_when_none_configured() {
+    // Arrange: [[tracker]] のない設定 (診断コマンドなのでエラーにしない)
+    let env = TestEnv::new();
+    env.write_home(".config/wsm/config.toml", &env.managers_config(&["tmux", "herdr"]));
+
+    // Act
+    let out = env.run(&["list-trackers"]);
+
+    // Assert
+    assert_eq!(out.status, Some(0));
+    assert_eq!(out.stdout_json(), json!([]));
 }
 
 #[test]

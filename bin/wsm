@@ -363,6 +363,86 @@ _do_ls() {
   echo ""
 }
 
+# wsm doctor: 構成の健全性を一望する。
+# server 到達性・セッションマネージャー・トラッカー (installed / ready /
+# 診断)・UI の依存コマンドを表示する。状態の解釈は server の JSON をそのまま
+# 使い、UI は整形だけを行う。
+_do_doctor() {
+  # server 到達性
+  case "$WSM_TRANSPORT" in
+    local)
+      local server_path=$(command -v wsm-server || true)
+      if [[ -n "$server_path" ]]; then
+        echo "server            ✅ ${server_path} (local)"
+      else
+        echo "server            ❌ wsm-server not found in PATH"
+        return 1
+      fi
+      ;;
+    ssh)
+      if _server list-session-managers >/dev/null 2>&1; then
+        echo "server            ✅ ${HOST_USER}@${WSM_HOST} (ssh)"
+      else
+        echo "server            ❌ unreachable: ${HOST_USER}@${WSM_HOST} (ssh)"
+        return 1
+      fi
+      ;;
+  esac
+
+  # セッションマネージャー (設定済みのものと既定)
+  echo "session managers"
+  local sm_json=$(_server list-session-managers)
+  if [[ $(printf '%s\n' "$sm_json" | jq 'length') -eq 0 ]]; then
+    echo "  (none)          ❌ config.toml に tmux_path / herdr_path を設定"
+  else
+    local name is_default
+    while IFS=$'\t' read -r name is_default; do
+      local mark=""
+      [[ "$is_default" == "true" ]] && mark="  (既定)"
+      printf '  %-16s✅ 設定済み%s\n' "$name" "$mark"
+    done < <(printf '%s\n' "$sm_json" | jq -r '.[] | "\(.name)\t\(.default)"')
+  fi
+
+  # トラッカー (installed / ready / 診断)
+  echo "trackers"
+  local tr_json=$(_server list-trackers)
+  if [[ $(printf '%s\n' "$tr_json" | jq 'length') -eq 0 ]]; then
+    echo "  (none)          ❌ config.toml に [[tracker]] を追加"
+  else
+    # Note: `status` は zsh の読み取り専用変数 ($? の別名) のため使わない
+    local tr_path installed ready diagnosis health
+    while IFS=$'\t' read -r name is_default tr_path installed ready diagnosis; do
+      local label=$name
+      [[ "$is_default" == "true" ]] && label+=" (既定)"
+      if [[ "$installed" != "true" ]]; then
+        health="❌ not installed: ${tr_path}"
+      elif [[ "$ready" == "true" ]]; then
+        health="✅ ready"
+      elif [[ "$ready" == "false" ]]; then
+        health="⚠️  not ready: ${diagnosis}"
+      else
+        health="✅ installed (info-v0 非対応)"
+      fi
+      printf '  %-16s%s\n' "$label" "$health"
+    # diagnosis は複数行になり得る (gh の stderr パススルー)。1 行表示に潰す
+    done < <(printf '%s\n' "$tr_json" \
+      | jq -r '.[] | "\(.name)\t\(.default)\t\(.path)\t\(.installed)\t\(.ready)\t\((.diagnosis // "") | gsub("\n"; " "))"')
+  fi
+
+  # UI の依存コマンド
+  local deps=(fzf jq) missing=() ok=()
+  [[ "$WSM_TRANSPORT" == "ssh" ]] && deps+=(ssh)
+  local dep
+  for dep in "${deps[@]}"; do
+    if command -v "$dep" >/dev/null 2>&1; then ok+=("$dep"); else missing+=("$dep"); fi
+  done
+  if [[ ${#missing[@]} -gt 0 ]]; then
+    echo "deps              ❌ missing: ${missing[*]}"
+  else
+    echo "deps              ✅ ${ok[*]}"
+  fi
+}
+
 # --- Main ---
 
 _check_deps
@@ -471,13 +551,18 @@ case "$cmd" in
     _do_ls
     ;;
 
+  "doctor")
+    _do_doctor
+    ;;
+
   *)
-    echo "Usage: wsm <op|rm|ls>"
+    echo "Usage: wsm <op|rm|ls|doctor>"
     echo ""
     echo "  wsm op [-d] [-m tmux|herdr] [<id>|<ns>/<repo>#<id>]   Open workspace"
     echo "                                        (-d: pick devcontainer(s))"
     echo "                                        bare <id>: cwd-resolved repo"
     echo "  wsm rm [-m tmux|herdr] [<id>|<ns>/<repo>#<id>]        Remove workspace"
     echo "  wsm ls [-m tmux|herdr]                                List workspaces"
+    echo "  wsm doctor                                            Check configuration health"
     ;;
 esac

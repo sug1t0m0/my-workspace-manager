@@ -79,3 +79,15 @@ pub fn issue(bin: &Path, repo: &RepoRef, id: &str) -> Option<(String, bool)> {
 fn valid_issue_id(id: &str) -> bool {
     id != "main" && domain::is_valid_issue(id)
 }
+
+/// プラグインの自己診断 (info-v0)。形を検証したフィールドだけを通す:
+/// (ready, diagnosis, protocol)。info-v0 非対応・出力不正は None。
+pub fn info(bin: &Path) -> Option<(bool, Option<String>, Option<Vec<String>>)> {
+    let v = call(bin, &["info-v0"])?;
+    let ready = v["ready"].as_bool()?;
+    let diagnosis = v["diagnosis"].as_str().map(str::to_owned);
+    let protocol = v["protocol"].as_array().map(|verbs| {
+        verbs.iter().filter_map(|verb| verb.as_str()).map(str::to_owned).collect()
+    });
+    Some((ready, diagnosis, protocol))
+}

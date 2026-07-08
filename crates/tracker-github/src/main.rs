@@ -13,7 +13,10 @@ use serde_json::{json, Value};
 use std::process::{Command, ExitCode};
 
 const USAGE: &str =
-    "Usage: wsm-tracker-github <list-projects-v0|project-repos-v0|list-issues-v0|issue-v0>";
+    "Usage: wsm-tracker-github <list-projects-v0|project-repos-v0|list-issues-v0|issue-v0|info-v0>";
+
+const PROTOCOL: &[&str] =
+    &["list-projects-v0", "project-repos-v0", "list-issues-v0", "issue-v0", "info-v0"];
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -36,6 +39,7 @@ fn run(args: &[String]) -> Result<Value, String> {
         "project-repos-v0" => project_repos(&flag(rest, "--project")?),
         "list-issues-v0" => list_issues(&flag(rest, "--repo")?),
         "issue-v0" => issue(&flag(rest, "--repo")?, &flag(rest, "--id")?),
+        "info-v0" => Ok(info()),
         // 未知の動詞は Usage + 非ゼロ (前方互換: 新しい wsm が新動詞を
         // 呼んだとき、古いプラグインはここで見えて失敗する)
         _ => Err(USAGE.to_owned()),
@@ -115,6 +119,38 @@ fn issue(repo: &str, id: &str) -> Result<Value, String> {
         None => return Err("unexpected gh output: missing state".to_owned()),
     };
     Ok(json!({ "title": title, "state": state }))
+}
+
+/// 自己診断 (info-v0)。トラッカーが使えない状態は ready:false のデータとして
+/// 返すため、info 自体は常に成功する (exit 0)。
+/// gh api user -i の 1 呼び出しで、ログイン状態とトークンのスコープ
+/// (X-Oauth-Scopes ヘッダ) を確認する。プロジェクト照会には read:project が
+/// 必要で、欠けていると照会が黙って空になるため、ここで修復手順ごと表面化させる。
+fn info() -> Value {
+    let (ready, diagnosis) = match gh(&["api", "user", "-i"]) {
+        Err(message) => (false, Some(message)),
+        Ok(response) => match scopes_header(&response) {
+            Some(scopes) if !scopes.split(',').any(|s| s.trim() == "read:project") => (
+                false,
+                Some(
+                    "gh token is missing scope read:project \
+                     (run: gh auth refresh -h github.com -s read:project)"
+                        .to_owned(),
+                ),
+            ),
+            // ヘッダなし (fine-grained token 等) はスコープを判定できないため ready 扱い
+            _ => (true, None),
+        },
+    };
+    json!({ "name": "github", "protocol": PROTOCOL, "ready": ready, "diagnosis": diagnosis })
+}
+
+/// `gh api -i` の応答ヘッダから X-Oauth-Scopes の値を取り出す。
+fn scopes_header(response: &str) -> Option<&str> {
+    response.lines().find_map(|line| {
+        let (name, value) = line.split_once(':')?;
+        name.trim().eq_ignore_ascii_case("x-oauth-scopes").then(|| value.trim())
+    })
 }
 
 /// プロジェクトの owner。環境変数が優先、なければ gh の認証ユーザー。

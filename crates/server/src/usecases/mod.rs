@@ -25,6 +25,36 @@ pub fn list_projects(home: &Path) -> CmdResult {
     Ok(Value::Array(tracker::open_projects(trackers.default_plugin()?)))
 }
 
+/// 設定されたトラッカーの一覧と診断 (wsm doctor 用)。設定順で、
+/// installed はプラグイン実行ファイルの存在、ready / diagnosis / protocol は
+/// info-v0 の自己診断 (非対応なら null)。
+pub fn list_trackers(home: &Path) -> CmdResult {
+    let trackers = settings::trackers(home)?;
+    let default = trackers.default_name().map(str::to_owned);
+    Ok(Value::Array(
+        trackers
+            .entries()
+            .map(|(name, path)| {
+                let installed = crate::infra::exec::is_executable(path);
+                let (ready, diagnosis, protocol) = installed
+                    .then(|| tracker::info(path))
+                    .flatten()
+                    .map(|(ready, diagnosis, protocol)| (Some(ready), diagnosis, protocol))
+                    .unwrap_or((None, None, None));
+                json!({
+                    "name": name,
+                    "path": path.to_string_lossy(),
+                    "default": Some(name) == default.as_deref(),
+                    "installed": installed,
+                    "ready": ready,
+                    "diagnosis": diagnosis,
+                    "protocol": protocol,
+                })
+            })
+            .collect(),
+    ))
+}
+
 pub fn list_session_managers(home: &Path) -> CmdResult {
     let managers = settings::session_managers(home);
     let default = settings::default_manager_name(home, &managers);
