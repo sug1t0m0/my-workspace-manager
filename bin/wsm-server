@@ -105,19 +105,63 @@ _workspace_path() {
   fi
 }
 
-# Resolve once and cache: called in loops, and _config_get spawns a subshell.
+# --- セッションマネージャーの設定 ---
+# config.toml の tmux_path / herdr_path で列挙する。ファイルでの出現順が
+# 選択順で、先頭が既定。path が設定されていないマネージャーは存在しない扱い
+# (選択不能・プローブや破棄の対象外)。フォールバックはない。
+
+typeset -g _manager_entries_cache="" _manager_entries_loaded=""
+_session_manager_entries() {
+  if [[ -z "$_manager_entries_loaded" ]]; then
+    _manager_entries_loaded=1
+    local file=$(_config_file)
+    if [[ -f "$file" ]]; then
+      _manager_entries_cache=$(sed -n -E 's/^(tmux|herdr)_path[[:space:]]*=[[:space:]]*"([^"]+)".*$/\1'$'\t''\2/p' "$file")
+    fi
+  fi
+  { [[ -n "$_manager_entries_cache" ]] && printf '%s\n' "$_manager_entries_cache" } || true
+}
+
+# 設定されたバイナリパス (チルダ展開済み)。未設定なら空。
+_manager_path() {
+  local name=$1
+  local p=$(_session_manager_entries | awk -F'\t' -v n="$name" '$1 == n { print $2; exit }')
+  p=${p/#\~\//$HOME/}
+  echo "$p"
+}
+
+_tmux_configured() { [[ -n "$(_manager_path tmux)" ]] }
+_herdr_configured() { [[ -n "$(_manager_path herdr)" ]] }
+
+# 設定されたパスで起動するラッパ (PATH 非依存)
+_tmux() { "$(_manager_path tmux)" "$@" }
+_herdr() { "$(_manager_path herdr)" "$@" }
+
+# 使用するマネージャー: WSM_SESSION_MANAGER (設定済みのみ有効) > 設定の先頭
 typeset -g _session_manager_cache=""
 _session_manager() {
   if [[ -z "$_session_manager_cache" ]]; then
-    local manager=${WSM_SESSION_MANAGER:-$(_config_get session_manager)}
-    manager=${manager:-tmux}
-    case "$manager" in
-      tmux|herdr) _session_manager_cache=$manager ;;
-      *)
-        echo "{\"error\":\"Invalid session manager: $manager\"}" >&2
+    local manager=${WSM_SESSION_MANAGER:-}
+    if [[ -n "$manager" ]]; then
+      case "$manager" in
+        tmux|herdr) ;;
+        *)
+          echo "{\"error\":\"Invalid session manager: $manager\"}" >&2
+          exit 1
+          ;;
+      esac
+      if [[ -z "$(_manager_path "$manager")" ]]; then
+        echo "{\"error\":\"session manager not configured: $manager\"}" >&2
         exit 1
-        ;;
-    esac
+      fi
+    else
+      manager=$(_session_manager_entries | head -1 | cut -f1)
+      if [[ -z "$manager" ]]; then
+        echo '{"error":"no session manager configured (set tmux_path / herdr_path in config.toml)"}' >&2
+        exit 1
+      fi
+    fi
+    _session_manager_cache=$manager
   fi
   echo "$_session_manager_cache"
 }
@@ -155,7 +199,8 @@ _tmux_session_name() {
 
 _tmux_session_exists() {
   local session=$1
-  tmux has-session -t "=$session" 2>/dev/null
+  _tmux_configured || return 1
+  _tmux has-session -t "=$session" 2>/dev/null
 }
 
 # --- herdr (SessionManager 実装) ---
@@ -166,14 +211,15 @@ _tmux_session_exists() {
 
 _herdr_session_running() {
   local session=$1
-  command -v herdr >/dev/null 2>&1 || return 1
-  herdr session list --json 2>/dev/null \
+  _herdr_configured || return 1
+  _herdr session list --json 2>/dev/null \
     | jq -e --arg name "$session" '.sessions[] | select(.name == $name and .running == true)' >/dev/null
 }
 
 _herdr_socket_path() {
   local session=$1
-  herdr session list --json 2>/dev/null \
+  _herdr_configured || return 0
+  _herdr session list --json 2>/dev/null \
     | jq -r --arg name "$session" '.sessions[] | select(.name == $name) | .socket_path' 2>/dev/null | head -1
 }
 
@@ -182,7 +228,7 @@ _herdr_workspace_list() {
   local session=$1
   local sock=$(_herdr_socket_path "$session")
   [[ -n "$sock" ]] || return 0
-  HERDR_SOCKET_PATH=$sock herdr workspace list 2>/dev/null || true
+  HERDR_SOCKET_PATH=$sock _herdr workspace list 2>/dev/null || true
 }
 
 _herdr_workspace_id() {
@@ -202,7 +248,8 @@ _herdr_has_issue_workspaces() {
 _herdr_ensure_running() {
   local session=$1
   _herdr_session_running "$session" && return 0
-  nohup herdr --session "$session" server >/dev/null 2>&1 &!
+  local bin=$(_manager_path herdr)
+  nohup "$bin" --session "$session" server >/dev/null 2>&1 &!
   local i
   for i in {1..50}; do
     _herdr_session_running "$session" && return 0
@@ -214,8 +261,8 @@ _herdr_ensure_running() {
 
 _herdr_stop_and_delete() {
   local session=$1
-  herdr session stop "$session" --json >/dev/null 2>&1 || true
-  herdr session delete "$session" --json >/dev/null 2>&1 || true
+  _herdr session stop "$session" --json >/dev/null 2>&1 || true
+  _herdr session delete "$session" --json >/dev/null 2>&1 || true
 }
 
 # --- Workspace とセッションの対応 (マネージャー実装を横断) ---
@@ -240,15 +287,11 @@ _ensure_workspace_session() {
     tmux)
       local session=$(_tmux_session_name "$ns_repo" "$id")
       if ! _tmux_session_exists "$session"; then
-        tmux new-session -d -s "$session" -c "$cwd"
+        _tmux new-session -d -s "$session" -c "$cwd"
       fi
       echo "$session"
       ;;
     herdr)
-      command -v herdr >/dev/null 2>&1 || {
-        echo '{"error":"herdr not installed"}' >&2
-        exit 1
-      }
       local session=$(_herdr_session_name "$ns_repo")
       _herdr_ensure_running "$session"
       local sock=$(_herdr_socket_path "$session")
@@ -261,20 +304,20 @@ _ensure_workspace_session() {
       if [[ -z "$main_wid" ]]; then
         local focus_flag=--no-focus
         [[ "$id" == "main" ]] && focus_flag=--focus
-        HERDR_SOCKET_PATH=$sock herdr workspace create --cwd "$(_ghq_path "$ns_repo")" --label "$main_label" "$focus_flag" >/dev/null 2>&1 || {
+        HERDR_SOCKET_PATH=$sock _herdr workspace create --cwd "$(_ghq_path "$ns_repo")" --label "$main_label" "$focus_flag" >/dev/null 2>&1 || {
           echo '{"error":"failed to create herdr workspace"}' >&2
           exit 1
         }
       elif [[ "$id" == "main" ]]; then
-        HERDR_SOCKET_PATH=$sock herdr workspace focus "$main_wid" >/dev/null 2>&1 || true
+        HERDR_SOCKET_PATH=$sock _herdr workspace focus "$main_wid" >/dev/null 2>&1 || true
       fi
 
       if [[ "$id" != "main" ]]; then
         local wid=$(_herdr_workspace_id "$session" "$id")
         if [[ -n "$wid" ]]; then
-          HERDR_SOCKET_PATH=$sock herdr workspace focus "$wid" >/dev/null 2>&1 || true
+          HERDR_SOCKET_PATH=$sock _herdr workspace focus "$wid" >/dev/null 2>&1 || true
         else
-          HERDR_SOCKET_PATH=$sock herdr workspace create --cwd "$cwd" --label "$id" --focus >/dev/null 2>&1 || {
+          HERDR_SOCKET_PATH=$sock _herdr workspace create --cwd "$cwd" --label "$id" --focus >/dev/null 2>&1 || {
             echo '{"error":"failed to create herdr workspace"}' >&2
             exit 1
           }
@@ -290,7 +333,9 @@ _ensure_workspace_session() {
 # main はセッションの stop + delete (Issue 残存チェックは cmd_remove が先に行う)。
 _remove_workspace_sessions() {
   local ns_repo=$1 id=$2
-  tmux kill-session -t "=$(_tmux_session_name "$ns_repo" "$id")" 2>/dev/null || true
+  if _tmux_configured; then
+    _tmux kill-session -t "=$(_tmux_session_name "$ns_repo" "$id")" 2>/dev/null || true
+  fi
 
   local herdr_session=$(_herdr_session_name "$ns_repo")
   _herdr_session_running "$herdr_session" || return 0
@@ -302,7 +347,7 @@ _remove_workspace_sessions() {
     local wid=$(printf '%s\n' "$ws_json" | jq -r --arg label "$id" '.result.workspaces[] | select(.label == $label) | .workspace_id' 2>/dev/null | head -1)
     [[ -n "$wid" ]] || return 0
     local sock=$(_herdr_socket_path "$herdr_session")
-    HERDR_SOCKET_PATH=$sock herdr workspace close "$wid" >/dev/null 2>&1 || true
+    HERDR_SOCKET_PATH=$sock _herdr workspace close "$wid" >/dev/null 2>&1 || true
     local count=$(printf '%s\n' "$ws_json" | jq -r '.result.workspaces | length' 2>/dev/null)
     if [[ "${count:-0}" -le 1 ]]; then
       _herdr_stop_and_delete "$herdr_session"
@@ -316,11 +361,11 @@ _attach_command() {
   local session=$1 workspace=$2
   case "$(_session_manager)" in
     tmux)
-      local tmux_bin=${commands[tmux]:-tmux}
+      local tmux_bin=$(_manager_path tmux)
       printf "%s attach-session -t '%s'" "$tmux_bin" "$session"
       ;;
     herdr)
-      local herdr_bin=${commands[herdr]:-herdr}
+      local herdr_bin=$(_manager_path herdr)
       local script="cd '$workspace' && exec '$herdr_bin' --session '$session'"
       printf "/bin/bash -lc %q" "$script"
       ;;
@@ -504,13 +549,13 @@ _add_window() {
   local session=$1 name=$2 window_command=$3 dedup_key=$4
   case "$(_session_manager)" in
     tmux)
-      if tmux list-panes -s -t "$session" -F '#{@wsm_cid}' 2>/dev/null | grep -qxF "$dedup_key"; then
+      if _tmux list-panes -s -t "$session" -F '#{@wsm_cid}' 2>/dev/null | grep -qxF "$dedup_key"; then
         return 0
       fi
       local new_pane
-      new_pane=$(tmux new-window -d -P -F '#{pane_id}' -t "${session}:" -n "$name" \
+      new_pane=$(_tmux new-window -d -P -F '#{pane_id}' -t "${session}:" -n "$name" \
         "$window_command" 2>/dev/null) || return 0
-      [[ -n "$new_pane" ]] && tmux set-option -p -t "$new_pane" @wsm_cid "$dedup_key" 2>/dev/null || true
+      [[ -n "$new_pane" ]] && _tmux set-option -p -t "$new_pane" @wsm_cid "$dedup_key" 2>/dev/null || true
       ;;
     herdr)
       return 0
@@ -827,6 +872,19 @@ cmd_list_devcontainer_configs() {
   fi
 }
 
+cmd_list_session_managers() {
+  local items=()
+  local name mpath
+  while IFS=$'\t' read -r name mpath; do
+    [[ -n "$name" ]] && items+=("{\"name\":\"$name\"}")
+  done < <(_session_manager_entries)
+  if [[ ${#items[@]} -eq 0 ]]; then
+    echo '[]'
+  else
+    printf '%s\n' "${items[@]}" | jq -s '.'
+  fi
+}
+
 cmd_open() {
   local ns_repo="" issue_id=""
   local configs=()
@@ -842,6 +900,10 @@ cmd_open() {
   [[ -z "$issue_id" ]] && { echo '{"error":"--issue required"}' >&2; exit 1; }
   _validate_repo "$ns_repo"
   _validate_issue "$issue_id"
+
+  # マネージャー選択を先にトップレベルで確定させる。コマンド置換内での
+  # エラーは親シェルを止められないため、未設定ならここで単発のエラーで落とす
+  _session_manager >/dev/null
 
   local message=""
   local session_name=""
@@ -955,10 +1017,11 @@ case "$subcmd" in
   list-issues)               cmd_list_issues "$@" ;;
   list-workspaces)           cmd_list_workspaces "$@" ;;
   list-devcontainer-configs) cmd_list_devcontainer_configs "$@" ;;
+  list-session-managers)     cmd_list_session_managers "$@" ;;
   open)                      cmd_open "$@" ;;
   remove)                    cmd_remove "$@" ;;
   *)
-    echo '{"error":"Usage: wsm-server <list-projects|list-repos|list-issues|list-workspaces|list-devcontainer-configs|open|remove>"}' >&2
+    echo '{"error":"Usage: wsm-server <list-projects|list-repos|list-issues|list-workspaces|list-devcontainer-configs|list-session-managers|open|remove>"}' >&2
     exit 1
     ;;
 esac

@@ -3,8 +3,11 @@
 # 同名の環境変数 (WSM_SESSION_MANAGER 等) はその場のオーバーライドとして優先される。
 # docs/wsm.md の Settings 節を参照。
 
-# 既定のセッションマネージャー ("tmux" / "herdr")
-session_manager = "tmux"
+# セッションマネージャーの列挙 (バイナリの絶対パス、チルダ可)。
+# ファイルでの出現順が選択 UI の並び順で、先頭が既定。
+# パスを設定していないマネージャーは選択不能 (フォールバックはない)。
+herdr_path = "~/.local/bin/herdr"
+tmux_path = "/opt/homebrew/bin/tmux"
 
 # フォールバック devcontainer 設定 (リポジトリに devcontainer.json がないときの既定)
 default_devcontainer_config = "/path/to/your/default/.devcontainer/devcontainer.json"

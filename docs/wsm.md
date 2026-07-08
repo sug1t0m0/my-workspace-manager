@@ -226,9 +226,16 @@ Worktree ロールは関与しない。
 
 ### SessionManager
 
-Workspace に紐づくターミナルセッションの管理。実装は交換可能で、
-`WSM_SESSION_MANAGER` 環境変数(既定: config.toml の `session_manager`)で
-選択する。現在の実装は tmux と herdr。
+Workspace に紐づくターミナルセッションの管理。現在の実装は tmux と herdr。
+
+使えるマネージャーは config.toml に **パス付きで列挙したものだけ**
+(`tmux_path` / `herdr_path`。Settings 節)。ファイルでの出現順が選択 UI の
+並び順で、先頭が既定。パスが設定されていないマネージャーは存在しない扱いに
+なり、選択・プローブ・破棄のすべてから外れる。**組み込みのフォールバックは
+ない**(1 つも設定されていなければ open はエラー)。その場のオーバーライドは
+`WSM_SESSION_MANAGER`(設定済みのもののみ有効)。バイナリは設定されたパスで
+起動する(PATH 非依存。Ghostty のようにログインシェルを介さない起動元でも
+確実に動く)。
 
 契約は `(ns_repo, id)` をキーに取る(書き換え時の trait 境界):
 
@@ -382,7 +389,7 @@ transport にかかわらず同じ設定が見える。フォーマットは TOM
 
 | キー | 内容 |
 |---|---|
-| `session_manager` | 既定のセッションマネージャー |
+| `tmux_path` / `herdr_path` | セッションマネージャーの列挙 (バイナリの絶対パス、チルダ可)。出現順が選択順で、先頭が既定。未設定のマネージャーは選択不能 |
 | `worktree_root` | worktree の置き場 (既定 `~/worktrees`) |
 | `devcontainer_shell` | 🐳 ウィンドウで docker exec するシェル (既定 `zsh`) |
 | `default_devcontainer_config` | フォールバック devcontainer 設定のパス |
@@ -453,6 +460,13 @@ remove は逆順で破棄する(Terminal は管理外なので対象外):
 `list-workspaces`
 → 全リポジトリ横断のアクティブ Workspace 一覧。スキーマは list-issues に
 `ns_repo` を加えたもの。
+
+`list-session-managers`
+→ 設定されたセッションマネージャーの一覧 (設定ファイルの出現順。先頭が既定)。
+UI のマネージャー選択はこれを使う (選択肢のハードコードを持たない)。
+```json
+[{"name": "herdr"}, {"name": "tmux"}]
+```
 
 `list-devcontainer-configs --repo <ns_repo> --issue <id>`
 → その Workspace で選択可能な devcontainer 設定の一覧。
@@ -609,6 +623,12 @@ herdr 本来のモデル (セッションの中に workspace) に合わせる。
 - Issue workspace のラベルは Issue 番号のみ (`42`)。「wsm 管理の workspace」の
   判定はラベルが数字のみであることを使う
 
+### セッションマネージャーは設定で列挙する(フォールバックなし)
+
+マネージャーの存在とバイナリの場所はマシン依存の値なので、config.toml に
+パス付きで列挙する。ツール側は既定 (tmux) を持たない。並び順という
+「ユーザーの好み」も設定ファイルの記述順で表現する。
+
 ### 旧形式 tmux セッション名は廃止済み
 
 旧形式 `<ns>/<repo>(-<id>)` のセッション名と、その検出・アタッチ・削除の
@@ -683,7 +703,7 @@ add_window 化、gh 直呼びの解消、個人依存既定値の除去、クラ
 
 | 変数 | 既定値 | 用途 |
 |---|---|---|
-| `WSM_SESSION_MANAGER` | (config.toml) | セッションマネージャーのオーバーライド。UI の `-m` / fzf 選択が export する |
+| `WSM_SESSION_MANAGER` | 設定の先頭 | セッションマネージャーのオーバーライド (設定済みのもののみ有効)。UI の `-m` / fzf 選択が export する |
 | `WSM_WORKTREE_ROOT` | (config.toml) | worktree 置き場のオーバーライド |
 | `WSM_DEVCONTAINER_SHELL` | (config.toml) | 🐳 ウィンドウのシェルのオーバーライド |
 | `WSM_DEFAULT_DEVCONTAINER_CONFIG` | (config.toml) | フォールバック devcontainer 設定のオーバーライド |

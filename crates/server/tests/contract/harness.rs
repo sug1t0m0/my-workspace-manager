@@ -85,6 +85,9 @@ impl TestEnv {
         fs::create_dir_all(env.fakes_dir()).unwrap();
         fs::write(env.log_file(), "").unwrap();
         FAKE_COMMANDS.iter().for_each(|cmd| env.install_fake(cmd));
+        // 既定のマネージャー設定 (tmux 先頭 = 既定)。フェイクのパスを指す。
+        // マネージャーはフォールバックを持たないため、設定が無いと open できない
+        env.write_home(".config/wsm/config.toml", &env.managers_config(&["tmux", "herdr"]));
         env
     }
 
@@ -160,6 +163,15 @@ impl TestEnv {
 
     pub fn home_str(&self) -> String {
         self.home().to_str().unwrap().to_owned()
+    }
+
+    /// マネージャー設定 (tmux_path / herdr_path) を指定の並び順で生成する。
+    /// 並び順が選択順で、先頭が既定。パスはフェイクを指す。
+    pub fn managers_config(&self, order: &[&str]) -> String {
+        order
+            .iter()
+            .map(|name| format!("{name}_path = \"{}/{name}\"\n", self.fakes_dir_str()))
+            .collect()
     }
 
     /// フェイクの置き場 (PATH 先頭)。attach_command のバイナリパス検証に使う。

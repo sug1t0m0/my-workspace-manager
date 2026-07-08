@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use wsm_shared::domains::{self as domain, RepoRef, WorkspaceId};
 
-const USAGE: &str = "Usage: wsm-server <list-projects|list-repos|list-issues|list-workspaces|list-devcontainer-configs|open|remove>";
+const USAGE: &str = "Usage: wsm-server <list-projects|list-repos|list-issues|list-workspaces|list-devcontainer-configs|list-session-managers|open|remove>";
 
 pub fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -35,6 +35,7 @@ fn run(args: &[String]) -> CmdResult {
         }
         "list-issues" => usecases::list_issues(&home, &required_repo(rest)?),
         "list-workspaces" => usecases::list_workspaces(&home),
+        "list-session-managers" => usecases::list_session_managers(&home),
         "list-devcontainer-configs" => {
             let repo = required_repo(rest)?;
             let id = required_issue(rest)?;

@@ -18,14 +18,66 @@ impl SessionManager {
     }
 }
 
-pub fn session_manager(home: &Path) -> Result<SessionManager, String> {
-    let raw = env_override("WSM_SESSION_MANAGER")
-        .or_else(|| config_value(home, "session_manager"))
-        .unwrap_or_else(|| "tmux".to_owned());
-    match raw.as_str() {
-        "tmux" => Ok(SessionManager::Tmux),
-        "herdr" => Ok(SessionManager::Herdr),
-        other => Err(format!("Invalid session manager: {other}")),
+/// 設定されたセッションマネージャーの列。config.toml の tmux_path /
+/// herdr_path の出現順 = 選択順で、先頭が既定。path が設定されていない
+/// マネージャーは存在しない扱い (選択不能・プローブや破棄の対象外)。
+pub struct Managers {
+    entries: Vec<(SessionManager, PathBuf)>,
+}
+
+impl Managers {
+    pub fn names(&self) -> Vec<&'static str> {
+        self.entries.iter().map(|(manager, _)| manager.name()).collect()
+    }
+
+    pub fn default_manager(&self) -> Option<SessionManager> {
+        self.entries.first().map(|(manager, _)| *manager)
+    }
+
+    pub fn path(&self, manager: SessionManager) -> Option<&Path> {
+        self.entries.iter().find(|(m, _)| *m == manager).map(|(_, path)| path.as_path())
+    }
+}
+
+/// config.toml から tmux_path / herdr_path を出現順に読む。
+pub fn session_managers(home: &Path) -> Managers {
+    let entries = std::fs::read_to_string(config_file(home))
+        .map(|content| {
+            content
+                .lines()
+                .filter_map(|line| {
+                    [("tmux_path", SessionManager::Tmux), ("herdr_path", SessionManager::Herdr)]
+                        .into_iter()
+                        .find_map(|(key, manager)| {
+                            parse_config_line(line, key)
+                                .filter(|value| !value.is_empty())
+                                .map(|value| (manager, expand_tilde(home, value)))
+                        })
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+    Managers { entries }
+}
+
+/// 使用するマネージャー: WSM_SESSION_MANAGER (設定済みのみ有効) > 設定の先頭。
+/// フォールバックはない。
+pub fn session_manager(managers: &Managers) -> Result<SessionManager, String> {
+    match env_override("WSM_SESSION_MANAGER") {
+        Some(raw) => {
+            let manager = match raw.as_str() {
+                "tmux" => SessionManager::Tmux,
+                "herdr" => SessionManager::Herdr,
+                other => return Err(format!("Invalid session manager: {other}")),
+            };
+            if managers.path(manager).is_none() {
+                return Err(format!("session manager not configured: {}", manager.name()));
+            }
+            Ok(manager)
+        }
+        None => managers.default_manager().ok_or_else(|| {
+            "no session manager configured (set tmux_path / herdr_path in config.toml)".to_owned()
+        }),
     }
 }
 

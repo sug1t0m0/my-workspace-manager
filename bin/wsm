@@ -132,14 +132,17 @@ _open_terminal_tab() {
 
 # --- UI parts ---
 
+# サーバーの設定 (tmux_path / herdr_path) に列挙されたものだけを、設定の
+# 並び順で出す。先頭が既定。
 _pick_session_manager() {
-  local selected
-  selected=$(printf '%s\n' \
-    "tmux"$'\t'"tmux  (existing workflow)" \
-    "herdr"$'\t'"herdr" \
-    | fzf --with-nth=2.. --delimiter=$'\t' --height=40% --reverse --prompt="Session manager> ")
-
-  [[ -n "$selected" ]] && printf '%s\n' "$selected" | cut -f1
+  local names=$(_server list-session-managers | jq -r '.[].name')
+  if [[ -z "$names" ]]; then
+    echo "Error: no session manager configured (set tmux_path / herdr_path in config.toml)" >&2
+    return 1
+  fi
+  local selected=$(printf '%s\n' "$names" \
+    | fzf --height=40% --reverse --prompt="Session manager> " --header="先頭が既定")
+  [[ -n "$selected" ]] && printf '%s\n' "$selected"
 }
 
 # Format devcontainer state into a display indicator.

@@ -5,17 +5,21 @@ use std::ffi::OsStr;
 use std::path::PathBuf;
 use std::process::{Command, Output};
 
-fn output(cmd: &str, args: &[impl AsRef<OsStr>]) -> Option<Output> {
+fn output(cmd: impl AsRef<OsStr>, args: &[impl AsRef<OsStr>]) -> Option<Output> {
     Command::new(cmd).args(args).output().ok()
 }
 
-fn output_env(cmd: &str, args: &[impl AsRef<OsStr>], envs: &[(&str, &str)]) -> Option<Output> {
+fn output_env(
+    cmd: impl AsRef<OsStr>,
+    args: &[impl AsRef<OsStr>],
+    envs: &[(&str, &str)],
+) -> Option<Output> {
     Command::new(cmd).args(args).envs(envs.iter().copied()).output().ok()
 }
 
 /// 環境変数付きの stdout_if_ok (herdr のセッションターゲット指定などに使う)。
 pub fn stdout_if_ok_env(
-    cmd: &str,
+    cmd: impl AsRef<OsStr>,
     args: &[impl AsRef<OsStr>],
     envs: &[(&str, &str)],
 ) -> Option<String> {
@@ -25,23 +29,27 @@ pub fn stdout_if_ok_env(
 }
 
 /// 環境変数付きの run_ignoring_failure。
-pub fn run_ignoring_failure_env(cmd: &str, args: &[impl AsRef<OsStr>], envs: &[(&str, &str)]) {
+pub fn run_ignoring_failure_env(
+    cmd: impl AsRef<OsStr>,
+    args: &[impl AsRef<OsStr>],
+    envs: &[(&str, &str)],
+) {
     let _ = output_env(cmd, args, envs);
 }
 
 /// コマンドが成功したときだけ stdout を返す (失敗・起動不能は None)。
-pub fn stdout_if_ok(cmd: &str, args: &[impl AsRef<OsStr>]) -> Option<String> {
+pub fn stdout_if_ok(cmd: impl AsRef<OsStr>, args: &[impl AsRef<OsStr>]) -> Option<String> {
     output(cmd, args)
         .filter(|o| o.status.success())
         .map(|o| String::from_utf8_lossy(&o.stdout).into_owned())
 }
 
-pub fn succeeds(cmd: &str, args: &[impl AsRef<OsStr>]) -> bool {
+pub fn succeeds(cmd: impl AsRef<OsStr>, args: &[impl AsRef<OsStr>]) -> bool {
     output(cmd, args).is_some_and(|o| o.status.success())
 }
 
 /// 失敗してもよい呼び出し (zsh 版の `|| true` に相当)。
-pub fn run_ignoring_failure(cmd: &str, args: &[impl AsRef<OsStr>]) {
+pub fn run_ignoring_failure(cmd: impl AsRef<OsStr>, args: &[impl AsRef<OsStr>]) {
     let _ = output(cmd, args);
 }
 

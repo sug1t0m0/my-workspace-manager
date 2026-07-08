@@ -1,6 +1,6 @@
 //! ドメイン層: Workspace の識別子と導出規則。純粋関数のみで、副作用を持たない。
 
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 
 /// リポジトリの識別子。ns (user / organization) と repo は別の概念なので
 /// 分けて保持し、`<ns>/<repo>` の文字列表現は境界 (JSON・Docker ラベル・

@@ -10,7 +10,7 @@ mod harness;
 use harness::TestEnv;
 use serde_json::json;
 
-const USAGE_ERROR: &str = "Usage: wsm-server <list-projects|list-repos|list-issues|list-workspaces|list-devcontainer-configs|open|remove>";
+const USAGE_ERROR: &str = "Usage: wsm-server <list-projects|list-repos|list-issues|list-workspaces|list-devcontainer-configs|list-session-managers|open|remove>";
 
 // --- ディスパッチ ---
 
@@ -487,7 +487,10 @@ fn respects_configured_worktree_root() {
     // Arrange: config.toml で worktree の置き場を変更 (チルダ展開も検証)
     let env = TestEnv::new();
     let home = env.home_str();
-    env.write_home(".config/wsm/config.toml", "worktree_root = \"~/wt\"\n")
+    env.write_home(
+            ".config/wsm/config.toml",
+            &format!("{}worktree_root = \"~/wt\"\n", env.managers_config(&["tmux", "herdr"])),
+        )
         .stub("worktree add --relative-paths -b feature/42 ", "")
         .stub("^tmux new-session -d -s owner_repo_42 -c ", "");
 
@@ -609,6 +612,39 @@ fn open_issue_creates_worktree_branch_and_session() {
     );
 }
 
+// --- セッションマネージャーの設定 ---
+
+#[test]
+fn list_session_managers_returns_configured_order() {
+    // Arrange: 設定ファイルの並び順 (herdr が先頭 = 既定)
+    let env = TestEnv::new();
+    env.write_home(".config/wsm/config.toml", &env.managers_config(&["herdr", "tmux"]));
+
+    // Act
+    let out = env.run(&["list-session-managers"]);
+
+    // Assert
+    assert_eq!(out.status, Some(0));
+    assert_eq!(out.stdout_json(), json!([{ "name": "herdr" }, { "name": "tmux" }]));
+}
+
+#[test]
+fn open_fails_when_no_session_manager_is_configured() {
+    // Arrange: マネージャーのパスが 1 つも設定されていない (フォールバックなし)
+    let env = TestEnv::new();
+    env.write_home(".config/wsm/config.toml", "");
+
+    // Act
+    let out = env.run(&["open", "--repo", "owner/repo", "--issue", "main"]);
+
+    // Assert
+    assert_eq!(out.status, Some(1));
+    assert_eq!(
+        out.stderr_json(),
+        json!({ "error": "no session manager configured (set tmux_path / herdr_path in config.toml)" })
+    );
+}
+
 // --- herdr (SessionManager 実装) ---
 // herdr はリポジトリ単位のセッション (<ns>.<repo>) に Issue ごとの workspace
 // (ラベル = Issue 番号) を追加するモデル。
@@ -647,7 +683,10 @@ fn zsh_quoted(s: &str) -> String {
         .collect()
 }
 
-const HERDR_CONFIG: &str = "session_manager = \"herdr\"\n";
+/// herdr を先頭 (= 既定) にしたマネージャー設定。
+fn herdr_first_config(env: &TestEnv) -> String {
+    env.managers_config(&["herdr", "tmux"])
+}
 
 #[test]
 fn open_issue_with_herdr_creates_workspace_in_repo_session() {
@@ -656,7 +695,7 @@ fn open_issue_with_herdr_creates_workspace_in_repo_session() {
     let env = TestEnv::new();
     let home = env.home_str();
     let sock = herdr_sock(&home);
-    env.write_home(".config/wsm/config.toml", HERDR_CONFIG)
+    env.write_home(".config/wsm/config.toml", &herdr_first_config(&env))
         .stub("^herdr session list --json$", &herdr_sessions_json(&home, true))
         .stub(
             &format!("^HERDR_SOCKET_PATH={sock} herdr workspace list$"),
@@ -697,7 +736,7 @@ fn open_issue_with_herdr_focuses_existing_workspace() {
     let env = TestEnv::new();
     let home = env.home_str();
     let sock = herdr_sock(&home);
-    env.write_home(".config/wsm/config.toml", HERDR_CONFIG)
+    env.write_home(".config/wsm/config.toml", &herdr_first_config(&env))
         .write_home("worktrees/github.com/owner/repo/42/.gitkeep", "")
         .stub("^herdr session list --json$", &herdr_sessions_json(&home, true))
         .stub(
@@ -728,7 +767,7 @@ fn open_issue_with_herdr_starts_session_headlessly_when_not_running() {
     let env = TestEnv::new();
     let home = env.home_str();
     let sock = herdr_sock(&home);
-    env.write_home(".config/wsm/config.toml", HERDR_CONFIG)
+    env.write_home(".config/wsm/config.toml", &herdr_first_config(&env))
         .stub_once("^herdr session list --json$", &herdr_sessions_json(&home, false))
         .stub("^herdr session list --json$", &herdr_sessions_json(&home, true))
         .stub(&format!("^HERDR_SOCKET_PATH={sock} herdr workspace list$"), &herdr_workspaces_json(&[]))
@@ -767,7 +806,7 @@ fn open_main_with_herdr_attaches_to_repo_session() {
     let env = TestEnv::new();
     let home = env.home_str();
     let sock = herdr_sock(&home);
-    env.write_home(".config/wsm/config.toml", HERDR_CONFIG)
+    env.write_home(".config/wsm/config.toml", &herdr_first_config(&env))
         .stub_once("^herdr session list --json$", &herdr_sessions_json(&home, false))
         .stub("^herdr session list --json$", &herdr_sessions_json(&home, true))
         .stub(&format!("^HERDR_SOCKET_PATH={sock} herdr workspace list$"), &herdr_workspaces_json(&[]))
@@ -802,7 +841,7 @@ fn open_main_with_herdr_focuses_existing_main_workspace() {
     let env = TestEnv::new();
     let home = env.home_str();
     let sock = herdr_sock(&home);
-    env.write_home(".config/wsm/config.toml", HERDR_CONFIG)
+    env.write_home(".config/wsm/config.toml", &herdr_first_config(&env))
         .stub("^herdr session list --json$", &herdr_sessions_json(&home, true))
         .stub(
             &format!("^HERDR_SOCKET_PATH={sock} herdr workspace list$"),
@@ -982,7 +1021,10 @@ fn list_issues_marks_herdr_workspace_as_active() {
 fn respects_configured_devcontainer_shell() {
     // Arrange: 🐳 ウィンドウで exec するシェルを bash に設定
     let env = TestEnv::new();
-    env.write_home(".config/wsm/config.toml", "devcontainer_shell = \"bash\"\n")
+    env.write_home(
+            ".config/wsm/config.toml",
+            &format!("{}devcontainer_shell = \"bash\"\n", env.managers_config(&["tmux", "herdr"])),
+        )
         .write_home("ghq/github.com/owner/repo/.devcontainer/devcontainer.json", "{}")
         .stub("^tmux new-session -d -s owner_repo -c ", "")
         .stub("^docker ps -a", "")
