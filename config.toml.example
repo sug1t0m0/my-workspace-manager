@@ -20,3 +20,12 @@ default_devcontainer_config = "/path/to/your/default/.devcontainer/devcontainer.
 
 # 🐳 ウィンドウで docker exec するシェル (既定: zsh)
 # devcontainer_shell = "zsh"
+
+# ghq 管理外のリポジトリの登録 (複数可)。識別子は <ns>/<name> になり、
+# worktree は <worktree_root>/<host>/<ns>/<name>/<id> に作られる (ghq のものと共通)。
+# ns/name は ghq のリポジトリも含めて全体で一意であること (重複はエラー)。
+# [[repo]]
+# path = "~/work/aaa"          # クローン本体の場所 (必須)
+# host = "gitlab.example.com"  # worktree パス導出に使う host (必須)
+# ns   = "myteam"              # 識別子の namespace (必須)
+# name = "aaa"                 # 識別子のリポジトリ名 (省略時 path の basename)

@@ -129,13 +129,14 @@ pub fn workspace_session_exists(repo: &RepoRef, id: &WorkspaceId, managers: &Man
 
 /// Workspace のセッションを冪等に用意し、アタッチ対象のセッション名を返す。
 /// herdr はリポジトリセッションを (なければヘッドレス起動して) 用意し、
-/// main / Issue の workspace を作成・フォーカスする。
+/// main / Issue の workspace を作成・フォーカスする (main の cwd は
+/// clone_path = クローン本体)。
 pub fn ensure(
     manager: SessionManager,
     repo: &RepoRef,
     id: &WorkspaceId,
     cwd: &Path,
-    paths: &domain::Paths,
+    clone_path: &Path,
     managers: &Managers,
 ) -> Result<String, String> {
     let bin = managers
@@ -167,12 +168,11 @@ pub fn ensure(
             let main_label = domain::herdr_workspace_label(repo, &WorkspaceId::Main);
             match (herdr_workspace_id(bin, &sock, &main_label), opening_main) {
                 (None, _) => {
-                    let ghq = domain::ghq_path(paths, repo);
-                    let ghq = ghq.to_string_lossy();
+                    let clone = clone_path.to_string_lossy();
                     let focus_flag = if opening_main { "--focus" } else { "--no-focus" };
                     exec::stdout_if_ok_env(
                         bin,
-                        &["workspace", "create", "--cwd", &ghq, "--label", &main_label, focus_flag],
+                        &["workspace", "create", "--cwd", &clone, "--label", &main_label, focus_flag],
                         &env,
                     )
                     .ok_or("failed to create herdr workspace")?;

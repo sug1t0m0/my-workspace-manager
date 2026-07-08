@@ -70,25 +70,35 @@ impl WorkspaceId {
     }
 }
 
-/// パス導出の基点。ghq_root は RepoStore (ghq) が管理するルート (`ghq root`)、
-/// worktree_root は worktree の置き場。値の解決は境界 (usecases) が行い、
-/// ドメインは受け取った値から純粋に導出する。
+/// パス導出の基点。worktree_root は worktree の置き場。値の解決は境界
+/// (usecases) が行い、ドメインは受け取った値から純粋に導出する。
 pub struct Paths {
     pub home: PathBuf,
-    pub ghq_root: PathBuf,
     pub worktree_root: PathBuf,
 }
 
-pub fn ghq_path(paths: &Paths, repo: &RepoRef) -> PathBuf {
-    paths.ghq_root.join("github.com").join(repo.ns()).join(repo.repo())
+/// リポジトリの所在。識別子 (RepoRef) に、RepoStore が解決したメタ情報
+/// (host とクローン本体のパス) を添えたもの。識別子はあくまで `<ns>/<repo>`
+/// で、host は worktree のパス導出と表示にだけ使う。
+#[derive(Clone)]
+pub struct RepoEntry {
+    pub repo: RepoRef,
+    pub host: String,
+    pub clone_path: PathBuf,
 }
 
-pub fn workspace_path(paths: &Paths, repo: &RepoRef, id: &WorkspaceId) -> PathBuf {
+/// Workspace のパス。main はクローン本体、Issue は
+/// `<worktree_root>/<host>/<ns>/<repo>/<id>` の worktree (クローンの
+/// 置き場によらず共通の導出)。
+pub fn workspace_path(paths: &Paths, entry: &RepoEntry, id: &WorkspaceId) -> PathBuf {
     match id {
-        WorkspaceId::Main => ghq_path(paths, repo),
-        WorkspaceId::Issue(issue) => {
-            paths.worktree_root.join("github.com").join(repo.ns()).join(repo.repo()).join(issue)
-        }
+        WorkspaceId::Main => entry.clone_path.clone(),
+        WorkspaceId::Issue(issue) => paths
+            .worktree_root
+            .join(&entry.host)
+            .join(entry.repo.ns())
+            .join(entry.repo.repo())
+            .join(issue),
     }
 }
 
@@ -144,4 +154,12 @@ pub fn is_valid_user(value: &str) -> bool {
 /// project: 数字のみ (`none` は list-repos が検証の前に処理する)。
 pub fn is_valid_project(value: &str) -> bool {
     !value.is_empty() && value.chars().all(|c| c.is_ascii_digit())
+}
+
+/// host: 英数と `.` `-` (先頭は英数)。`/` を許さないこと・先頭が英数である
+/// ことで、パスセグメントとして安全 (`..` やトラバーサルにならない)。
+pub fn is_valid_host(value: &str) -> bool {
+    let mut chars = value.chars();
+    chars.next().is_some_and(|c| c.is_ascii_alphanumeric())
+        && chars.all(|c| c.is_ascii_alphanumeric() || matches!(c, '.' | '-'))
 }

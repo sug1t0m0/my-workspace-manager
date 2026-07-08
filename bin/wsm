@@ -90,8 +90,11 @@ _resolve_target() {
     fi
     printf '%s\t%s\n' "$ns_repo" "$id"
   else
+    # remote URL の末尾 <ns>/<repo> を host によらず取り出す
+    # (git@host:ns/repo.git / https://host/ns/repo.git / ssh://... に対応)。
+    # host の解決は server の RepoStore が行うため、ここでは識別子だけでよい
     local ns_repo
-    ns_repo=$(git remote get-url origin 2>/dev/null | sed -E 's|.*github\.com[:/]||; s|\.git$||')
+    ns_repo=$(git remote get-url origin 2>/dev/null | sed -E 's|\.git$||; s|^.*[:/]([^/]+/[^/]+)$|\1|')
     if [[ -z "$ns_repo" ]]; then
       echo "Error: not in a git repository. Use 'wsm <op|rm>' (interactive) or pass <ns>/<repo>#<id>." >&2
       return 1

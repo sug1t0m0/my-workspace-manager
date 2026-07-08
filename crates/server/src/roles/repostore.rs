@@ -1,10 +1,14 @@
-//! RepoStore ロールの ghq 実装。ローカルクローンの列挙。読み取り専用。
-//! github.com 固定は現行実装の制約 (docs/wsm.md の拡張点を参照)。
-//! 出力は RepoRef にパースし、形の不正な行は捨てる。
+//! RepoStore ロール: ローカルにあるリポジトリの列挙とクローン本体のパス解決。
+//! 読み取り専用。ソースは 2 つ: ghq (`ghq list`、任意の host) と、設定
+//! `[[repo]]` で登録された ghq 管理外のクローン。
+//!
+//! リポジトリの識別子は `<ns>/<repo>` で、host はストアが解決するメタ情報。
+//! ns/repo は全ソース・全 host を横断して一意であることを規約とし、
+//! 重複はエラーにする。出力の形が不正な行は捨てる。
 
-use crate::infra::exec;
+use crate::infra::{exec, settings};
 use std::path::{Path, PathBuf};
-use wsm_shared::domains::RepoRef;
+use wsm_shared::domains::{self as domain, RepoEntry, RepoRef};
 
 /// ghq のルート (`ghq root` を尊重。取得できなければ ~/ghq)。
 pub fn root(home: &Path) -> PathBuf {
@@ -15,29 +19,47 @@ pub fn root(home: &Path) -> PathBuf {
         .unwrap_or_else(|| home.join("ghq"))
 }
 
-/// ローカルにあるリポジトリの一覧 (`ghq list`、ns_repo の文字列順)。
-pub fn list() -> Vec<RepoRef> {
+/// ストアの全エントリ (ghq の出力順 → 設定 `[[repo]]` の記述順)。
+pub fn entries(home: &Path) -> Result<Vec<RepoEntry>, String> {
+    let mut entries = ghq_entries(&root(home));
+    entries.extend(settings::custom_repos(home)?);
+    Ok(entries)
+}
+
+/// 識別子 `<ns>/<repo>` からエントリを解決する。見つからない・複数の host に
+/// またがって重複する場合はエラー (識別子の一意性が規約)。
+pub fn lookup(home: &Path, repo: &RepoRef) -> Result<RepoEntry, String> {
+    let mut matches: Vec<RepoEntry> =
+        entries(home)?.into_iter().filter(|entry| entry.repo == *repo).collect();
+    match matches.len() {
+        0 => Err(format!("repository not found: {}", repo.ns_repo())),
+        1 => Ok(matches.remove(0)),
+        _ => Err(format!(
+            "ambiguous repository: {} ({})",
+            repo.ns_repo(),
+            matches.iter().map(|entry| entry.host.as_str()).collect::<Vec<_>>().join(", ")
+        )),
+    }
+}
+
+fn ghq_entries(root: &Path) -> Vec<RepoEntry> {
     exec::stdout_if_ok("ghq", &["list"])
-        .map(|out| {
-            let mut repos: Vec<RepoRef> = out
-                .lines()
-                .filter_map(|line| line.strip_prefix("github.com/"))
-                .filter_map(RepoRef::parse)
-                .collect();
-            repos.sort_by_key(RepoRef::ns_repo);
-            repos
-        })
+        .map(|out| out.lines().filter_map(|line| ghq_entry(root, line)).collect())
         .unwrap_or_default()
 }
 
-/// ローカルにあるリポジトリの一覧 (`ghq list -p`、ghq の出力順)。
-pub fn list_in_ghq_order() -> Vec<RepoRef> {
-    exec::stdout_if_ok("ghq", &["list", "-p"])
-        .map(|out| {
-            out.lines()
-                .filter_map(|line| line.split_once("/github.com/").map(|(_, ns_repo)| ns_repo))
-                .filter_map(RepoRef::parse)
-                .collect()
-        })
-        .unwrap_or_default()
+/// `ghq list` の 1 行 `<host>/<ns>/<repo>` をエントリにする。サブグループ等で
+/// 3 セグメントを超える行は repo 名の検証で落ちる (現状の非対応を明示)。
+fn ghq_entry(root: &Path, line: &str) -> Option<RepoEntry> {
+    let mut parts = line.splitn(3, '/');
+    let (host, ns, name) = (parts.next()?, parts.next()?, parts.next()?);
+    if !domain::is_valid_host(host) {
+        return None;
+    }
+    let repo = RepoRef::parse(&format!("{ns}/{name}"))?;
+    Some(RepoEntry {
+        clone_path: root.join(host).join(ns).join(name),
+        host: host.to_owned(),
+        repo,
+    })
 }

@@ -208,7 +208,9 @@ fn repeated_flags_use_the_last_value() {
 fn dotted_repo_names_stay_valid() {
     // Arrange: .github のような先頭ドットのリポジトリ名は正当 (締めすぎ防止)
     let env = TestEnv::new();
-    env.stub("^docker ps -a", "").stub("^gh issue list --repo owner/.github", "");
+    env.stub("^ghq list$", "github.com/owner/.github\n")
+        .stub("^docker ps -a", "")
+        .stub("^gh issue list --repo owner/.github", "");
 
     // Act
     let out = env.run(&["list-issues", "--repo", "owner/.github"]);
@@ -239,21 +241,22 @@ fn list_projects_preserves_backslashes_in_titles() {
 
 #[test]
 fn list_repos_lists_all_ghq_repos_when_project_none() {
-    // Arrange
+    // Arrange: host は github.com に限らない (サブグループ等の 4 セグメントは非対応)
     let env = TestEnv::new();
     env.stub(
         "^ghq list$",
-        "github.com/owner/tool\ngithub.com/owner/repo\nexample.com/other/repo\n",
+        "github.com/owner/tool\ngithub.com/owner/repo\ngitlab.example.com/other/repo\ngitlab.com/group/sub/repo\n",
     );
 
     // Act
     let out = env.run(&["list-repos", "--project", "none"]);
 
-    // Assert: github.com のみ・ソート済み。Tracker (gh) には触れない
+    // Assert: 全 host をソート済みで列挙。Tracker (gh) には触れない
     assert_eq!(out.status, Some(0));
     assert_eq!(
         out.stdout_json(),
         json!([
+            { "ns_repo": "other/repo", "active_count": 0 },
             { "ns_repo": "owner/repo", "active_count": 0 },
             { "ns_repo": "owner/tool", "active_count": 0 },
         ])
@@ -305,13 +308,151 @@ fn list_repos_filters_project_repos_by_local_clones() {
     assert_eq!(out.stdout_json(), json!([{ "ns_repo": "owner/repo", "active_count": 0 }]));
 }
 
+// --- RepoStore (host とカスタムリポジトリ) ---
+// 識別子は <ns>/<repo> のまま。host は RepoStore が解決するメタ情報で、
+// worktree のパス導出 (<worktree_root>/<host>/<ns>/<repo>/<id>) にだけ現れる。
+
+#[test]
+fn ghq_repo_on_another_host_uses_host_scoped_paths() {
+    // Arrange: ghq に gitlab のクローンだけがある
+    let env = TestEnv::new();
+    env.stub("^ghq list$", "gitlab.example.com/team/svc\n")
+        .stub("worktree add --relative-paths -b feature/7 ", "")
+        .stub("^tmux new-session -d -s team_svc_7 -c ", "");
+    let home = env.home_str();
+    let worktree_path = format!("{home}/worktrees/gitlab.example.com/team/svc/7");
+
+    // Act
+    let out = env.run(&["open", "--repo", "team/svc", "--issue", "7"]);
+
+    // Assert: クローンも worktree も host セグメント配下。セッション名に host は含めない
+    assert_eq!(out.status, Some(0));
+    let v = out.stdout_json();
+    assert_eq!(v["session"], "team_svc_7");
+    assert_eq!(v["path"], worktree_path.as_str());
+    assert!(
+        env.invocations().contains(&format!(
+            "git -C {home}/ghq/gitlab.example.com/team/svc worktree add --relative-paths -b feature/7 {worktree_path}"
+        )),
+        "worktree must derive from the entry's host and clone path: {:?}",
+        env.invocations()
+    );
+}
+
+#[test]
+fn custom_repo_from_config_opens_with_common_worktree_logic() {
+    // Arrange: ghq 管理外のクローン (~/work/aaa) を [[repo]] で登録する。
+    // name は省略 (path の basename)。ghq には何もない
+    let env = TestEnv::new();
+    let config = format!(
+        "{}[[repo]]\npath = \"~/work/aaa\"\nhost = \"gitlab.example.com\"\nns = \"myteam\"\n",
+        env.managers_config(&["tmux", "herdr"])
+    );
+    env.write_home(".config/wsm/config.toml", &config)
+        .stub("^ghq list$", "")
+        .stub("worktree add --relative-paths -b feature/CHH-111 ", "")
+        .stub("^tmux new-session -d -s myteam_aaa_CHH-111 -c ", "");
+    let home = env.home_str();
+    let worktree_path = format!("{home}/worktrees/gitlab.example.com/myteam/aaa/CHH-111");
+
+    // Act
+    let out = env.run(&["open", "--repo", "myteam/aaa", "--issue", "CHH-111"]);
+
+    // Assert: クローンは設定の path、worktree は host メタ情報から共通の導出
+    assert_eq!(out.status, Some(0));
+    let v = out.stdout_json();
+    assert_eq!(v["session"], "myteam_aaa_CHH-111");
+    assert_eq!(v["path"], worktree_path.as_str());
+    assert!(
+        env.invocations().contains(&format!(
+            "git -C {home}/work/aaa worktree add --relative-paths -b feature/CHH-111 {worktree_path}"
+        )),
+        "worktree must be created from the configured clone path: {:?}",
+        env.invocations()
+    );
+}
+
+#[test]
+fn custom_repo_appears_in_list_repos() {
+    // Arrange: ghq の owner/repo (既定スタブ) + 設定登録の myteam/aaa
+    let env = TestEnv::new();
+    let config = format!(
+        "{}[[repo]]\npath = \"~/work/aaa\"\nhost = \"gitlab.example.com\"\nns = \"myteam\"\n",
+        env.managers_config(&["tmux", "herdr"])
+    );
+    env.write_home(".config/wsm/config.toml", &config);
+
+    // Act
+    let out = env.run(&["list-repos", "--project", "none"]);
+
+    // Assert: ソース (ghq / 設定) を問わず同じ一覧に出る
+    assert_eq!(out.status, Some(0));
+    assert_eq!(
+        out.stdout_json(),
+        json!([
+            { "ns_repo": "myteam/aaa", "active_count": 0 },
+            { "ns_repo": "owner/repo", "active_count": 0 },
+        ])
+    );
+}
+
+#[test]
+fn ambiguous_repo_across_hosts_is_an_error() {
+    // Arrange: 同じ ns/repo が 2 つの host にある (識別子の一意性規約に違反)
+    let env = TestEnv::new();
+    env.stub("^ghq list$", "github.com/owner/repo\ngitlab.com/owner/repo\n");
+
+    // Act
+    let out = env.run(&["open", "--repo", "owner/repo", "--issue", "main"]);
+
+    // Assert
+    assert_eq!(out.status, Some(1));
+    assert_eq!(
+        out.stderr_json(),
+        json!({ "error": "ambiguous repository: owner/repo (github.com, gitlab.com)" })
+    );
+}
+
+#[test]
+fn open_unknown_repo_fails_with_error_json() {
+    // Arrange: ストア (ghq / 設定) のどこにもないリポジトリ
+    let env = TestEnv::new();
+    env.stub("^ghq list$", "");
+
+    // Act
+    let out = env.run(&["open", "--repo", "owner/nope", "--issue", "main"]);
+
+    // Assert
+    assert_eq!(out.status, Some(1));
+    assert_eq!(out.stdout, "");
+    assert_eq!(out.stderr_json(), json!({ "error": "repository not found: owner/nope" }));
+}
+
+#[test]
+fn invalid_repo_entry_in_config_fails_loudly() {
+    // Arrange: 必須キー ns のない [[repo]] (設定ミスは黙って捨てない)
+    let env = TestEnv::new();
+    let config = format!(
+        "{}[[repo]]\npath = \"~/work/aaa\"\nhost = \"gitlab.example.com\"\n",
+        env.managers_config(&["tmux", "herdr"])
+    );
+    env.write_home(".config/wsm/config.toml", &config);
+
+    // Act
+    let out = env.run(&["list-repos", "--project", "none"]);
+
+    // Assert
+    assert_eq!(out.status, Some(1));
+    assert_eq!(out.stderr_json(), json!({ "error": "[[repo]] requires ns in config.toml" }));
+}
+
 // --- list-workspaces ---
 
 #[test]
 fn list_workspaces_returns_empty_array_when_none_active() {
     // Arrange
     let env = TestEnv::new();
-    env.stub("^ghq list -p$", &format!("{}/ghq/github.com/owner/repo\n", env.home_str()));
+    env.stub("^ghq list$", "github.com/owner/repo\n");
 
     // Act
     let out = env.run(&["list-workspaces"]);
@@ -328,7 +469,7 @@ fn list_workspaces_lists_main_and_worktree_entries() {
     let home = env.home_str();
     env.write_home("ghq/github.com/owner/repo/.gitkeep", "")
         .write_home("worktrees/github.com/owner/repo/42/.gitkeep", "")
-        .stub("^ghq list -p$", &format!("{home}/ghq/github.com/owner/repo\n"))
+        .stub("^ghq list$", "github.com/owner/repo\n")
         .stub(
             "worktree list --porcelain",
             &format!(
@@ -1387,8 +1528,9 @@ fn remove_main_kills_session_but_keeps_the_clone() {
 
 #[test]
 fn list_repos_returns_empty_array_when_ghq_fails() {
-    // Arrange: ghq は未スタブ → 起動失敗相当 (出力なし・exit 1)
+    // Arrange: ghq list が起動失敗相当 (出力なし・exit 1)
     let env = TestEnv::new();
+    env.stub_exit("^ghq list$", "", 1);
 
     // Act
     let out = env.run(&["list-repos", "--project", "none"]);

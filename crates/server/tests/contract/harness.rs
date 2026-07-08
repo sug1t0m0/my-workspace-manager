@@ -88,6 +88,9 @@ impl TestEnv {
         // 既定のマネージャー設定 (tmux 先頭 = 既定)。フェイクのパスを指す。
         // マネージャーはフォールバックを持たないため、設定が無いと open できない
         env.write_home(".config/wsm/config.toml", &env.managers_config(&["tmux", "herdr"]));
+        // 既定のリポジトリストア: owner/repo が ghq (github.com) にある。
+        // 構成を変えるテストは ^ghq list$ を自前の stub() で上書きする
+        env.stub_default("^ghq list$", "github.com/owner/repo\n");
         env
     }
 
@@ -105,6 +108,17 @@ impl TestEnv {
     /// (セッション起動待ちのポーリング等) の再現に使う。
     pub fn stub_once(&self, pattern: &str, stdout: &str) -> &Self {
         self.add_stub(pattern, stdout, None, true)
+    }
+
+    /// 既定スタブ。パターン表は名前の辞書順で最初の一致が使われるため、
+    /// zzz- 接頭辞で常に最後に回し、テストの stub() が同じ呼び出しに
+    /// 一致するときはそちらを勝たせる。
+    pub fn stub_default(&self, pattern: &str, stdout: &str) -> &Self {
+        let n = self.stub_count.fetch_add(1, Ordering::SeqCst);
+        let base = self.responses_dir().join(format!("zzz-{n:03}"));
+        fs::write(base.with_extension("pattern"), pattern).unwrap();
+        fs::write(base.with_extension("stdout"), stdout).unwrap();
+        self
     }
 
     /// 一時 HOME 配下にファイルを書く (親ディレクトリも作る)。

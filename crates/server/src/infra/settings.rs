@@ -1,7 +1,9 @@
-//! Settings: config.toml (`key = "value"` のサブセットのみ対応) と
-//! 環境変数オーバーライド。優先順位: 環境変数 > 設定ファイル > 組み込み既定値。
+//! Settings: config.toml (トップレベルの `key = "value"` と `[[repo]]`
+//! テーブルのサブセットのみ対応) と環境変数オーバーライド。
+//! 優先順位: 環境変数 > 設定ファイル > 組み込み既定値。
 
 use std::path::{Path, PathBuf};
+use wsm_shared::domains::{self as domain, RepoEntry, RepoRef};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub enum SessionManager {
@@ -124,6 +126,88 @@ pub fn default_devcontainer_config(home: &Path) -> Option<PathBuf> {
         .or_else(|| config_value(home, "default_devcontainer_config"))?;
     let expanded = expand_tilde(home, raw);
     expanded.is_file().then_some(expanded)
+}
+
+/// ghq 管理外のリポジトリの登録 (`[[repo]]` テーブル)。識別子のメタ情報
+/// (host / ns / name) を設定で与え、worktree はドメイン共通の導出を使う。
+///
+/// ```toml
+/// [[repo]]
+/// path = "~/work/aaa"          # クローン本体の場所 (必須)
+/// host = "gitlab.example.com"  # worktree パス導出に使う host (必須)
+/// ns   = "myteam"              # 識別子の namespace (必須)
+/// name = "aaa"                 # 識別子のリポジトリ名 (省略時 path の basename)
+/// ```
+pub fn custom_repos(home: &Path) -> Result<Vec<RepoEntry>, String> {
+    let content = std::fs::read_to_string(config_file(home)).unwrap_or_default();
+    let mut entries = Vec::new();
+    let mut current: Option<RepoTable> = None;
+
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed == "[[repo]]" {
+            if let Some(table) = current.take() {
+                entries.push(table.finish(home)?);
+            }
+            current = Some(RepoTable::default());
+        } else if trimmed.starts_with('[') {
+            // 別のセクションの開始で [[repo]] テーブルは終わる
+            if let Some(table) = current.take() {
+                entries.push(table.finish(home)?);
+            }
+        } else if let Some(table) = current.as_mut() {
+            table.read_line(trimmed);
+        }
+    }
+    if let Some(table) = current.take() {
+        entries.push(table.finish(home)?);
+    }
+    Ok(entries)
+}
+
+#[derive(Default)]
+struct RepoTable {
+    path: Option<String>,
+    host: Option<String>,
+    ns: Option<String>,
+    name: Option<String>,
+}
+
+impl RepoTable {
+    fn read_line(&mut self, line: &str) {
+        for (key, slot) in [
+            ("path", &mut self.path),
+            ("host", &mut self.host),
+            ("ns", &mut self.ns),
+            ("name", &mut self.name),
+        ] {
+            if let Some(value) = parse_config_line(line, key) {
+                *slot = Some(value);
+            }
+        }
+    }
+
+    /// 必須キーの検証と RepoEntry への変換。設定の誤りは黙って捨てず
+    /// error JSON として表面化させる (フォールバックなしの方針)。
+    fn finish(self, home: &Path) -> Result<RepoEntry, String> {
+        let path = self.path.ok_or("[[repo]] requires path in config.toml")?;
+        let host = self.host.ok_or("[[repo]] requires host in config.toml")?;
+        let ns = self.ns.ok_or("[[repo]] requires ns in config.toml")?;
+        let clone_path = expand_tilde(home, path);
+        let name = match self.name {
+            Some(name) => name,
+            None => clone_path
+                .file_name()
+                .map(|n| n.to_string_lossy().into_owned())
+                .ok_or("[[repo]] path has no basename for name")?,
+        };
+        if !domain::is_valid_host(&host) {
+            return Err(format!("Invalid repo host: {host}"));
+        }
+        let repo = RepoRef::parse(&format!("{ns}/{name}"))
+            .ok_or_else(|| format!("Invalid repo entry: {ns}/{name}"))?;
+        Ok(RepoEntry { repo, host, clone_path })
+    }
 }
 
 fn env_override(name: &str) -> Option<String> {

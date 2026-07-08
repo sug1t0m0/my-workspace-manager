@@ -1,7 +1,7 @@
 //! DevContainer ロールの devcontainers/cli + docker 実装。
 //! コンテナの同一性は Docker ラベル (wsm.ns-repo / wsm.issue-id / wsm.config)。
 
-use wsm_shared::domains::{self as domain, RepoRef, WorkspaceId};
+use wsm_shared::domains::{RepoRef, WorkspaceId};
 use crate::infra::exec;
 use std::path::{Path, PathBuf};
 
@@ -71,10 +71,12 @@ fn state_for_config(ns_repo: &str, id: &str, cname: &str) -> Option<&'static str
 }
 
 /// 1 つの devcontainer を冪等に起動する。worktree Workspace では git common dir
-/// も /workspaces/ 配下にマウントし、コンテナ内パスを WSM_* remote-env で渡す。
+/// (clone_path/.git) も /workspaces/ 配下にマウントし、コンテナ内パスを
+/// WSM_* remote-env で渡す。
 /// `--remove-existing-container` は渡さない (再入場時に副作用を保持するため)。
 pub fn up(
-    paths: &domain::Paths,
+    home: &Path,
+    clone_path: &Path,
     repo: &RepoRef,
     id: &WorkspaceId,
     workspace: &Path,
@@ -87,7 +89,7 @@ pub fn up(
     }
 
     let before = state_for_config(&repo.ns_repo(), id.as_str(), cname);
-    let args = up_args(paths, repo, id, workspace, config_path, cname);
+    let args = up_args(home, clone_path, repo, id, workspace, config_path, cname);
     if !exec::succeeds("devcontainer", &args) {
         return Err("devcontainer up failed".to_owned());
     }
@@ -100,7 +102,8 @@ pub fn up(
 
 /// devcontainer up の引数列を組み立てる純粋関数 (並びは契約テストが固定)。
 fn up_args(
-    paths: &domain::Paths,
+    home: &Path,
+    clone_path: &Path,
     repo: &RepoRef,
     id: &WorkspaceId,
     workspace: &Path,
@@ -126,12 +129,12 @@ fn up_args(
         .then(|| {
             let container_worktree = format!(
                 "/workspaces/{}",
-                workspace.strip_prefix(&paths.home).unwrap_or(workspace).display()
+                workspace.strip_prefix(home).unwrap_or(workspace).display()
             );
-            let common_dir = domain::ghq_path(paths, repo).join(".git");
+            let common_dir = clone_path.join(".git");
             let container_common = format!(
                 "/workspaces/{}",
-                common_dir.strip_prefix(&paths.home).unwrap_or(&common_dir).display()
+                common_dir.strip_prefix(home).unwrap_or(&common_dir).display()
             );
             [
                 "--mount-git-worktree-common-dir".to_owned(),
@@ -153,7 +156,8 @@ pub fn exec_command(
     repo: &RepoRef,
     id: &WorkspaceId,
     cname: &str,
-    paths: &domain::Paths,
+    home: &Path,
+    workspace: &Path,
     shell: &str,
 ) -> Option<(String, String)> {
     let ns_repo = repo.ns_repo();
@@ -176,8 +180,8 @@ pub fn exec_command(
     });
 
     // コンテナ内 workdir はホストパスの $HOME 相対 (devcontainers/cli のマウント規則)
-    let ws = domain::workspace_path(paths, repo, id);
-    let workdir = format!("/workspaces/{}", ws.strip_prefix(&paths.home).unwrap_or(&ws).display());
+    let workdir =
+        format!("/workspaces/{}", workspace.strip_prefix(home).unwrap_or(workspace).display());
     let user_part = remote_user.map(|u| format!(" --user '{u}'")).unwrap_or_default();
     let command = format!("docker exec -it{user_part} -w '{workdir}' '{cid}' {shell}");
     Some((cid, command))

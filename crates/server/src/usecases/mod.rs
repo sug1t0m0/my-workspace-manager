@@ -8,18 +8,14 @@ use crate::roles::{devcontainer, repostore, session, tracker, worktree};
 use serde_json::{json, Value};
 use std::collections::HashSet;
 use std::path::Path;
-use wsm_shared::domains::{self as domain, RepoRef, WorkspaceId};
+use wsm_shared::domains::{self as domain, RepoEntry, RepoRef, WorkspaceId};
 
 pub type CmdResult = Result<Value, String>;
 
 /// パス導出の基点を解決する (コマンド呼び出しごとに 1 回)。
-/// ghq のルートは RepoStore ロールに聞く (`ghq root` 尊重)。
+/// クローン本体のパスは RepoStore が解決する (RepoEntry.clone_path)。
 fn paths(home: &Path) -> domain::Paths {
-    domain::Paths {
-        home: home.to_owned(),
-        ghq_root: repostore::root(home),
-        worktree_root: settings::worktree_root(home),
-    }
+    domain::Paths { home: home.to_owned(), worktree_root: settings::worktree_root(home) }
 }
 
 /// user は未指定なら Tracker で自己解決する (解決した値も検証する)。
@@ -43,17 +39,20 @@ pub fn list_session_managers(home: &Path) -> CmdResult {
 pub fn list_repos(home: &Path, project: Option<String>, user: Option<String>) -> CmdResult {
     let project = project.unwrap_or_default();
 
-    let repos: Vec<RepoRef> = if project.is_empty() || project == "none" {
-        repostore::list()
+    let repos: Vec<RepoEntry> = if project.is_empty() || project == "none" {
+        let mut entries = repostore::entries(home)?;
+        entries.sort_by_key(|entry| entry.repo.ns_repo());
+        entries
     } else {
         // Tracker (Project 所属) と RepoStore (ローカルにある) の交差
         let user = resolved_user(user)?;
         let project = validated("project", project, domain::is_valid_project)?;
-        let local: HashSet<RepoRef> = repostore::list().into_iter().collect();
+        let entries = repostore::entries(home)?;
         tracker::project_repos(&user, &project)
             .iter()
             .filter_map(|name| RepoRef::parse(name))
-            .filter(|repo| local.contains(repo))
+            .filter_map(|repo| entries.iter().find(|entry| entry.repo == repo))
+            .cloned()
             .collect()
     };
 
@@ -62,8 +61,8 @@ pub fn list_repos(home: &Path, project: Option<String>, user: Option<String>) ->
     Ok(Value::Array(
         repos
             .iter()
-            .map(|repo| {
-                json!({ "ns_repo": repo.ns_repo(), "active_count": active_count(&paths, repo, &managers) })
+            .map(|entry| {
+                json!({ "ns_repo": entry.repo.ns_repo(), "active_count": active_count(&paths, entry, &managers) })
             })
             .collect(),
     ))
@@ -72,33 +71,34 @@ pub fn list_repos(home: &Path, project: Option<String>, user: Option<String>) ->
 pub fn list_workspaces(home: &Path) -> CmdResult {
     let paths = paths(home);
     let managers = settings::session_managers(home);
-    let entries = repostore::list_in_ghq_order()
+    let rows = repostore::entries(home)?
         .into_iter()
-        .flat_map(|repo| {
-            let main_entry = session::workspace_session_exists(&repo, &WorkspaceId::Main, &managers)
+        .flat_map(|entry| {
+            let repo = &entry.repo;
+            let main_entry = session::workspace_session_exists(repo, &WorkspaceId::Main, &managers)
                 .then(|| {
                 json!({
                     "ns_repo": repo.ns_repo(), "id": "main", "title": "main",
                     "active": true, "closed": false,
-                    "devcontainer": devcontainer::state(&repo, "main"),
+                    "devcontainer": devcontainer::state(repo, "main"),
                 })
             });
 
-            let worktree_entries: Vec<Value> = active_issue_ids(&paths, &repo, &managers)
+            let worktree_entries: Vec<Value> = active_issue_ids(&paths, &entry, &managers)
                 .into_iter()
                 .map(|id| {
                     let active = session::workspace_session_exists(
-                        &repo,
+                        repo,
                         &WorkspaceId::Issue(id.clone()),
                         &managers,
                     );
-                    let (title, closed) = tracker::issue_title_and_state(&repo, &id)
+                    let (title, closed) = tracker::issue_title_and_state(repo, &id)
                         .map(|(title, state)| (title, state == "CLOSED"))
                         .unwrap_or_else(|| ("unknown".to_owned(), false));
                     json!({
                         "ns_repo": repo.ns_repo(), "id": id, "title": title,
                         "active": active, "closed": closed,
-                        "devcontainer": devcontainer::state(&repo, &id),
+                        "devcontainer": devcontainer::state(repo, &id),
                     })
                 })
                 .collect();
@@ -106,10 +106,11 @@ pub fn list_workspaces(home: &Path) -> CmdResult {
             main_entry.into_iter().chain(worktree_entries).collect::<Vec<_>>()
         })
         .collect();
-    Ok(Value::Array(entries))
+    Ok(Value::Array(rows))
 }
 
 pub fn list_issues(home: &Path, repo: &RepoRef) -> CmdResult {
+    let entry = repostore::lookup(home, repo)?;
     let paths = paths(home);
     let managers = settings::session_managers(home);
     let main_entry = issue_entry(
@@ -120,7 +121,7 @@ pub fn list_issues(home: &Path, repo: &RepoRef) -> CmdResult {
         devcontainer::state(repo, "main"),
     );
 
-    let active_ids = active_issue_ids(&paths, repo, &managers);
+    let active_ids = active_issue_ids(&paths, &entry, &managers);
     let open_issues = tracker::open_issues(repo);
     let open_ids: HashSet<&str> = open_issues.iter().map(|(id, _)| id.as_str()).collect();
 
@@ -149,8 +150,9 @@ pub fn list_issues(home: &Path, repo: &RepoRef) -> CmdResult {
 }
 
 pub fn list_devcontainer_configs(home: &Path, repo: &RepoRef, id: &WorkspaceId) -> CmdResult {
+    let entry = repostore::lookup(home, repo)?;
     let paths = paths(home);
-    let workspace = domain::workspace_path(&paths, repo, id);
+    let workspace = domain::workspace_path(&paths, &entry, id);
 
     let repo_entries = devcontainer::repo_configs(&workspace).into_iter().map(|(name, path)| {
         json!({ "name": name, "path": path.to_string_lossy(), "source": "repo" })
@@ -162,18 +164,19 @@ pub fn list_devcontainer_configs(home: &Path, repo: &RepoRef, id: &WorkspaceId) 
 }
 
 pub fn open(home: &Path, repo: &RepoRef, id: &WorkspaceId, configs: &[String]) -> CmdResult {
+    let entry = repostore::lookup(home, repo)?;
     let managers = settings::session_managers(home);
     let manager = settings::session_manager(home, &managers)?;
     let paths = paths(home);
-    let workspace = domain::workspace_path(&paths, repo, id);
+    let workspace = domain::workspace_path(&paths, &entry, id);
 
     // 依存の順序: worktree (Issue のみ) → session → devcontainer
     if let WorkspaceId::Issue(n) = id {
         if !workspace.is_dir() {
-            worktree::add(&domain::ghq_path(&paths, repo), &domain::branch_name(n), &workspace)?;
+            worktree::add(&entry.clone_path, &domain::branch_name(n), &workspace)?;
         }
     }
-    let session = session::ensure(manager, repo, id, &workspace, &paths, &managers)?;
+    let session = session::ensure(manager, repo, id, &workspace, &entry.clone_path, &managers)?;
 
     let shell = settings::devcontainer_shell(home);
     let outcomes = configs
@@ -181,11 +184,14 @@ pub fn open(home: &Path, repo: &RepoRef, id: &WorkspaceId, configs: &[String]) -
         .map(|cfg| {
             let config_path = Path::new(cfg);
             let cname = devcontainer::config_name(&workspace, config_path);
-            let outcome = devcontainer::up(&paths, repo, id, &workspace, config_path, &cname)
-                .map_err(|_| format!("devcontainer up failed for {cfg}"))?;
+            let outcome =
+                devcontainer::up(home, &entry.clone_path, repo, id, &workspace, config_path, &cname)
+                    .map_err(|_| format!("devcontainer up failed for {cfg}"))?;
             // 配線: DevContainer が exec コマンドを組み立て、SessionManager が
             // 🐳 ウィンドウを追加する (dedup キーはコンテナ ID)
-            if let Some((cid, command)) = devcontainer::exec_command(repo, id, &cname, &paths, &shell) {
+            if let Some((cid, command)) =
+                devcontainer::exec_command(repo, id, &cname, home, &workspace, &shell)
+            {
                 session::add_window(manager, &session, "🐳", &command, &cid, &managers);
             }
             Ok(format!("{}: {cname}", outcome.label()))
@@ -223,7 +229,9 @@ pub fn remove(home: &Path, repo: &RepoRef, id: &WorkspaceId) -> CmdResult {
         ));
     }
 
-    // 破棄は open の逆順: session → devcontainer → worktree
+    // 破棄は open の逆順: session → devcontainer → worktree。
+    // セッションとコンテナの破棄はパスに依存しないため、ストアで解決できない
+    // リポジトリ (クローン消失後など) でも掃除できる
     session::remove_workspace_sessions(repo, id, &managers);
     devcontainer::down(repo, id.as_str());
 
@@ -233,7 +241,9 @@ pub fn remove(home: &Path, repo: &RepoRef, id: &WorkspaceId) -> CmdResult {
             "message": format!("Removed session: {}", repo.ns_repo()),
         })),
         WorkspaceId::Issue(issue) => {
-            worktree::remove(&domain::ghq_path(&paths, repo), &domain::workspace_path(&paths, repo, id));
+            if let Ok(entry) = repostore::lookup(home, repo) {
+                worktree::remove(&entry.clone_path, &domain::workspace_path(&paths, &entry, id));
+            }
             // トラッカー固有の記法 (# 等) は使わない: <ns_repo> <id> のスペース区切り
             Ok(json!({
                 "status": "ok",
@@ -244,27 +254,26 @@ pub fn remove(home: &Path, repo: &RepoRef, id: &WorkspaceId) -> CmdResult {
 }
 
 /// 合成ビュー: アクティブな (= 規約パスにあり、セッションが生きている)
-/// worktree の Issue 番号。Worktree ロールと SessionManager ロールの合成。
+/// worktree の Issue id。Worktree ロールと SessionManager ロールの合成。
 fn active_issue_ids(
     paths: &domain::Paths,
-    repo: &RepoRef,
+    entry: &RepoEntry,
     managers: &settings::Managers,
 ) -> Vec<String> {
-    let ghq = domain::ghq_path(paths, repo);
-    if !ghq.is_dir() {
+    if !entry.clone_path.is_dir() {
         return Vec::new();
     }
-    let Some(porcelain) = worktree::list_porcelain(&ghq) else {
+    let Some(porcelain) = worktree::list_porcelain(&entry.clone_path) else {
         return Vec::new();
     };
     worktree::parse_feature_worktrees(&porcelain)
         .into_iter()
         .filter(|(path, issue)| {
             let id = WorkspaceId::Issue(issue.clone());
-            let expected = domain::workspace_path(paths, repo, &id);
+            let expected = domain::workspace_path(paths, entry, &id);
             Path::new(path) == expected
                 && expected.is_dir()
-                && session::workspace_session_exists(repo, &id, managers)
+                && session::workspace_session_exists(&entry.repo, &id, managers)
         })
         .map(|(_, issue)| issue)
         .collect()
@@ -272,9 +281,9 @@ fn active_issue_ids(
 
 /// 合成ビュー: リポジトリ内のアクティブ Workspace 数
 /// (アクティブな worktree + main セッションの有無)。
-fn active_count(paths: &domain::Paths, repo: &RepoRef, managers: &settings::Managers) -> usize {
-    active_issue_ids(paths, repo, managers).len()
-        + usize::from(session::workspace_session_exists(repo, &WorkspaceId::Main, managers))
+fn active_count(paths: &domain::Paths, entry: &RepoEntry, managers: &settings::Managers) -> usize {
+    active_issue_ids(paths, entry, managers).len()
+        + usize::from(session::workspace_session_exists(&entry.repo, &WorkspaceId::Main, managers))
 }
 
 fn issue_entry(id: &str, title: &str, active: bool, closed: bool, dc: &str) -> Value {
