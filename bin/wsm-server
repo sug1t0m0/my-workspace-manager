@@ -137,23 +137,30 @@ _herdr_configured() { [[ -n "$(_manager_path herdr)" ]] }
 _tmux() { "$(_manager_path tmux)" "$@" }
 _herdr() { "$(_manager_path herdr)" "$@" }
 
-# 使用するマネージャー: WSM_SESSION_MANAGER (設定済みのみ有効) > 設定の先頭
+# 名前が既知かつパスが設定済みであることを要求する
+_require_configured_manager() {
+  local manager=$1
+  case "$manager" in
+    tmux|herdr) ;;
+    *)
+      echo "{\"error\":\"Invalid session manager: $manager\"}" >&2
+      exit 1
+      ;;
+  esac
+  if [[ -z "$(_manager_path "$manager")" ]]; then
+    echo "{\"error\":\"session manager not configured: $manager\"}" >&2
+    exit 1
+  fi
+}
+
+# 使用するマネージャー:
+#   WSM_SESSION_MANAGER > default_session_manager > 設定の先頭
 typeset -g _session_manager_cache=""
 _session_manager() {
   if [[ -z "$_session_manager_cache" ]]; then
-    local manager=${WSM_SESSION_MANAGER:-}
+    local manager=${WSM_SESSION_MANAGER:-$(_config_get default_session_manager)}
     if [[ -n "$manager" ]]; then
-      case "$manager" in
-        tmux|herdr) ;;
-        *)
-          echo "{\"error\":\"Invalid session manager: $manager\"}" >&2
-          exit 1
-          ;;
-      esac
-      if [[ -z "$(_manager_path "$manager")" ]]; then
-        echo "{\"error\":\"session manager not configured: $manager\"}" >&2
-        exit 1
-      fi
+      _require_configured_manager "$manager"
     else
       manager=$(_session_manager_entries | head -1 | cut -f1)
       if [[ -z "$manager" ]]; then
@@ -873,10 +880,15 @@ cmd_list_devcontainer_configs() {
 }
 
 cmd_list_session_managers() {
+  local default=$(_config_get default_session_manager)
+  [[ -z "$default" ]] && default=$(_session_manager_entries | head -1 | cut -f1)
   local items=()
   local name mpath
   while IFS=$'\t' read -r name mpath; do
-    [[ -n "$name" ]] && items+=("{\"name\":\"$name\"}")
+    [[ -n "$name" ]] || continue
+    local is_default=false
+    [[ "$name" == "$default" ]] && is_default=true
+    items+=("{\"name\":\"$name\",\"default\":$is_default}")
   done < <(_session_manager_entries)
   if [[ ${#items[@]} -eq 0 ]]; then
     echo '[]'

@@ -30,7 +30,14 @@ pub fn list_projects(user: Option<String>) -> CmdResult {
 
 pub fn list_session_managers(home: &Path) -> CmdResult {
     let managers = settings::session_managers(home);
-    Ok(Value::Array(managers.names().into_iter().map(|name| json!({ "name": name })).collect()))
+    let default = settings::default_manager_name(home, &managers);
+    Ok(Value::Array(
+        managers
+            .names()
+            .into_iter()
+            .map(|name| json!({ "name": name, "default": Some(name) == default }))
+            .collect(),
+    ))
 }
 
 pub fn list_repos(home: &Path, project: Option<String>, user: Option<String>) -> CmdResult {
@@ -156,7 +163,7 @@ pub fn list_devcontainer_configs(home: &Path, repo: &RepoRef, id: &WorkspaceId) 
 
 pub fn open(home: &Path, repo: &RepoRef, id: &WorkspaceId, configs: &[String]) -> CmdResult {
     let managers = settings::session_managers(home);
-    let manager = settings::session_manager(&managers)?;
+    let manager = settings::session_manager(home, &managers)?;
     let paths = paths(home);
     let workspace = domain::workspace_path(&paths, repo, id);
 

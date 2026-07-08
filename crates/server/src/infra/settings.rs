@@ -60,25 +60,43 @@ pub fn session_managers(home: &Path) -> Managers {
     Managers { entries }
 }
 
-/// 使用するマネージャー: WSM_SESSION_MANAGER (設定済みのみ有効) > 設定の先頭。
-/// フォールバックはない。
-pub fn session_manager(managers: &Managers) -> Result<SessionManager, String> {
-    match env_override("WSM_SESSION_MANAGER") {
-        Some(raw) => {
-            let manager = match raw.as_str() {
-                "tmux" => SessionManager::Tmux,
-                "herdr" => SessionManager::Herdr,
-                other => return Err(format!("Invalid session manager: {other}")),
-            };
-            if managers.path(manager).is_none() {
-                return Err(format!("session manager not configured: {}", manager.name()));
-            }
-            Ok(manager)
-        }
+fn manager_from_name(raw: &str) -> Result<SessionManager, String> {
+    match raw {
+        "tmux" => Ok(SessionManager::Tmux),
+        "herdr" => Ok(SessionManager::Herdr),
+        other => Err(format!("Invalid session manager: {other}")),
+    }
+}
+
+fn require_configured(
+    managers: &Managers,
+    manager: SessionManager,
+) -> Result<SessionManager, String> {
+    managers
+        .path(manager)
+        .map(|_| manager)
+        .ok_or_else(|| format!("session manager not configured: {}", manager.name()))
+}
+
+/// 使用するマネージャー:
+///   WSM_SESSION_MANAGER > default_session_manager > 設定の先頭。
+/// いずれも設定済み (パスあり) のもののみ有効。
+pub fn session_manager(home: &Path, managers: &Managers) -> Result<SessionManager, String> {
+    match env_override("WSM_SESSION_MANAGER").or_else(|| config_value(home, "default_session_manager")) {
+        Some(raw) => require_configured(managers, manager_from_name(&raw)?),
         None => managers.default_manager().ok_or_else(|| {
             "no session manager configured (set tmux_path / herdr_path in config.toml)".to_owned()
         }),
     }
+}
+
+/// UI 表示用の既定マネージャー名 (default_session_manager > 先頭)。
+pub fn default_manager_name(home: &Path, managers: &Managers) -> Option<&'static str> {
+    config_value(home, "default_session_manager")
+        .and_then(|raw| manager_from_name(&raw).ok())
+        .filter(|manager| managers.path(*manager).is_some())
+        .map(SessionManager::name)
+        .or_else(|| managers.default_manager().map(SessionManager::name))
 }
 
 /// 🐳 ウィンドウで docker exec するシェル (既定 `zsh`)。

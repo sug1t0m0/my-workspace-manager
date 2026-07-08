@@ -625,7 +625,39 @@ fn list_session_managers_returns_configured_order() {
 
     // Assert
     assert_eq!(out.status, Some(0));
-    assert_eq!(out.stdout_json(), json!([{ "name": "herdr" }, { "name": "tmux" }]));
+    assert_eq!(
+        out.stdout_json(),
+        json!([{ "name": "herdr", "default": true }, { "name": "tmux", "default": false }])
+    );
+}
+
+#[test]
+fn explicit_default_session_manager_overrides_order() {
+    // Arrange: 並び順は tmux 先頭だが、default_session_manager で herdr を既定に
+    let env = TestEnv::new();
+    let home = env.home_str();
+    let sock = herdr_sock(&home);
+    env.write_home(
+        ".config/wsm/config.toml",
+        &format!("{}default_session_manager = \"herdr\"\n", env.managers_config(&["tmux", "herdr"])),
+    )
+    .stub("^herdr session list --json$", &herdr_sessions_json(&home, true))
+    .stub(
+        &format!("^HERDR_SOCKET_PATH={sock} herdr workspace list$"),
+        &herdr_workspaces_json(&[("w1", "repo")]),
+    )
+    .stub(&format!("^HERDR_SOCKET_PATH={sock} herdr workspace focus "), "");
+
+    // Act
+    let list = env.run(&["list-session-managers"]);
+    let opened = env.run(&["open", "--repo", "owner/repo", "--issue", "main"]);
+
+    // Assert: default フラグも選択も herdr
+    assert_eq!(
+        list.stdout_json(),
+        json!([{ "name": "tmux", "default": false }, { "name": "herdr", "default": true }])
+    );
+    assert_eq!(opened.stdout_json()["message"], "Opened owner/repo (main) [herdr]");
 }
 
 #[test]
