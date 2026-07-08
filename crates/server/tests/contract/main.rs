@@ -482,6 +482,30 @@ fn respects_custom_ghq_root() {
     );
 }
 
+#[test]
+fn respects_configured_worktree_root() {
+    // Arrange: config.toml で worktree の置き場を変更 (チルダ展開も検証)
+    let env = TestEnv::new();
+    let home = env.home_str();
+    env.write_home(".config/wsm/config.toml", "worktree_root = \"~/wt\"\n")
+        .stub("worktree add --relative-paths -b feature/42 ", "")
+        .stub("^tmux new-session -d -s owner_repo_42 -c ", "");
+
+    // Act
+    let out = env.run(&["open", "--repo", "owner/repo", "--issue", "42"]);
+
+    // Assert
+    assert_eq!(out.status, Some(0));
+    assert_eq!(out.stdout_json()["path"], format!("{home}/wt/github.com/owner/repo/42"));
+    assert!(
+        env.invocations()
+            .iter()
+            .any(|l| l.contains(&format!("-b feature/42 {home}/wt/github.com/owner/repo/42"))),
+        "worktree must be created under the configured root: {:?}",
+        env.invocations()
+    );
+}
+
 // --- list-devcontainer-configs ---
 
 #[test]

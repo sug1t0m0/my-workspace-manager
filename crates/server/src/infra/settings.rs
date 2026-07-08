@@ -29,14 +29,23 @@ pub fn session_manager(home: &Path) -> Result<SessionManager, String> {
     }
 }
 
+/// worktree の置き場 (既定 `~/worktrees`)。
+pub fn worktree_root(home: &Path) -> PathBuf {
+    env_override("WSM_WORKTREE_ROOT")
+        .or_else(|| config_value(home, "worktree_root"))
+        .map(|raw| expand_tilde(home, raw))
+        .unwrap_or_else(|| home.join("worktrees"))
+}
+
+fn expand_tilde(home: &Path, raw: String) -> PathBuf {
+    raw.strip_prefix("~/").map(|rest| home.join(rest)).unwrap_or_else(|| PathBuf::from(raw))
+}
+
 /// フォールバック devcontainer 設定。実在するファイルのときだけ返す。
 pub fn default_devcontainer_config(home: &Path) -> Option<PathBuf> {
     let raw = env_override("WSM_DEFAULT_DEVCONTAINER_CONFIG")
         .or_else(|| config_value(home, "default_devcontainer_config"))?;
-    let expanded = raw
-        .strip_prefix("~/")
-        .map(|rest| home.join(rest))
-        .unwrap_or_else(|| PathBuf::from(raw));
+    let expanded = expand_tilde(home, raw);
     expanded.is_file().then_some(expanded)
 }
 

@@ -78,6 +78,17 @@ _ghq_path() {
   echo "$(_ghq_root)/github.com/$1"
 }
 
+# worktree の置き場 (config.toml の worktree_root。環境変数で上書き可。既定 ~/worktrees)
+typeset -g _worktree_root_cache=""
+_worktree_root() {
+  if [[ -z "$_worktree_root_cache" ]]; then
+    local p=${WSM_WORKTREE_ROOT:-$(_config_get worktree_root)}
+    p=${p/#\~\//$HOME/}
+    _worktree_root_cache=${p:-$HOME/worktrees}
+  fi
+  echo "$_worktree_root_cache"
+}
+
 # Resolve the GitHub user via gh. Used when --user is omitted so that
 # UI layers never need to call gh themselves.
 _gh_user() {
@@ -90,7 +101,7 @@ _workspace_path() {
   if [[ "$id" == "main" ]]; then
     _ghq_path "$ns_repo"
   else
-    echo "$HOME/worktrees/github.com/${ns_repo}/${id}"
+    echo "$(_worktree_root)/github.com/${ns_repo}/${id}"
   fi
 }
 
@@ -518,7 +529,7 @@ _repo_active_ids() {
   local ghq_path=$(_ghq_path "$ns_repo")
   [[ -d "$ghq_path" ]] || return 0
 
-  local worktree_base="$HOME/worktrees/github.com/${ns_repo}"
+  local worktree_base="$(_worktree_root)/github.com/${ns_repo}"
   local current_path=""
 
   git -C "$ghq_path" worktree list --porcelain 2>/dev/null | while IFS= read -r line; do
@@ -830,7 +841,7 @@ cmd_open() {
     message="Opened ${ns_repo} (main) [$(_session_manager)]"
   else
     local branch="feature/${issue_id}"
-    local worktree_path="$HOME/worktrees/github.com/${ns_repo}/${issue_id}"
+    local worktree_path=$(_workspace_path "$ns_repo" "$issue_id")
     local ghq_path=$(_ghq_path "$ns_repo")
 
     if [[ ! -d "$worktree_path" ]]; then
@@ -912,7 +923,7 @@ cmd_remove() {
     _devcontainer_down "$ns_repo" main
     echo "{\"status\":\"ok\",\"message\":\"Removed session: $ns_repo\"}"
   else
-    local worktree_path="$HOME/worktrees/github.com/${ns_repo}/${issue_id}"
+    local worktree_path=$(_workspace_path "$ns_repo" "$issue_id")
     local ghq_path=$(_ghq_path "$ns_repo")
 
     _remove_workspace_sessions "$ns_repo" "$issue_id"

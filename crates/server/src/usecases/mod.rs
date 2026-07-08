@@ -18,7 +18,7 @@ fn paths(home: &Path) -> domain::Paths {
     domain::Paths {
         home: home.to_owned(),
         ghq_root: repostore::root(home),
-        worktree_root: home.join("worktrees"),
+        worktree_root: settings::worktree_root(home),
     }
 }
 

@@ -112,7 +112,7 @@ Workspace は中心となるエンティティ。`(RepoRef, id)` の組で一意
 | id | 実体 | パス | ブランチ |
 |---|---|---|---|
 | `main` | クローン本体 (RepoStore) | `<ghq root>/<host>/<ns_repo>` | (そのまま) |
-| Issue 番号 | git worktree | `~/worktrees/<host>/<ns_repo>/<id>` | `feature/<id>` |
+| Issue 番号 | git worktree | `<worktree root>/<host>/<ns_repo>/<id>` | `feature/<id>` |
 
 パス・ブランチ名の導出は server のみが行う。クライアントは導出規則を持たず、
 server の応答から受け取る。
@@ -213,7 +213,8 @@ Issue Workspace の作業ツリー。
 
 - state: 有 / 無
 - ensure: ブランチ `feature/<id>` の worktree を
-  `~/worktrees/<host>/<ns_repo>/<id>` に作る。ブランチが既存ならそれを
+  `<worktree root>/<host>/<ns_repo>/<id>` に作る (worktree root は設定
+  `worktree_root`、既定 `~/worktrees`)。ブランチが既存ならそれを
   チェックアウトし、なければ作る。`--relative-paths` を付ける
   (DevContainer マウント時にホスト絶対パスへの参照を避けるため)
 - remove: worktree を削除する
@@ -381,6 +382,7 @@ transport にかかわらず同じ設定が見える。フォーマットは TOM
 | キー | 内容 |
 |---|---|
 | `session_manager` | 既定のセッションマネージャー |
+| `worktree_root` | worktree の置き場 (既定 `~/worktrees`) |
 | `default_devcontainer_config` | フォールバック devcontainer 設定のパス |
 
 優先順位: 環境変数 > 設定ファイル > 組み込み既定値。環境変数は
@@ -645,7 +647,8 @@ SSH ホワイトリストは `wsm-server` エントリだけで足りる。
 
 - リポジトリは ghq のルート配下 (`ghq root` で解決。既定 `~/ghq`)。
   対応 host は github.com のみ
-- worktree は `~/worktrees/<host>/` 配下
+- worktree は設定 `worktree_root`(既定 `~/worktrees`)配下。
+  配下の構造 `<host>/<ns_repo>/<id>` は固定
 - worktree のブランチは `feature/<id>`
 
 ## dotfiles との境界
@@ -679,6 +682,7 @@ add_window 化、gh 直呼びの解消、個人依存既定値の除去、クラ
 | 変数 | 既定値 | 用途 |
 |---|---|---|
 | `WSM_SESSION_MANAGER` | (config.toml) | セッションマネージャーのオーバーライド。UI の `-m` / fzf 選択が export する |
+| `WSM_WORKTREE_ROOT` | (config.toml) | worktree 置き場のオーバーライド |
 | `WSM_DEFAULT_DEVCONTAINER_CONFIG` | (config.toml) | フォールバック devcontainer 設定のオーバーライド |
 | `WSM_TRANSPORT` | 自動判別 | server への到達方法の明示指定 (`local` / `ssh`) |
 | `WSM_HOST` | `host.docker.internal` | (ssh transport) SSH 接続先 |

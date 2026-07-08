@@ -8,3 +8,6 @@ session_manager = "tmux"
 
 # フォールバック devcontainer 設定 (リポジトリに devcontainer.json がないときの既定)
 default_devcontainer_config = "/path/to/your/default/.devcontainer/devcontainer.json"
+
+# worktree の置き場 (既定: ~/worktrees)
+# worktree_root = "~/worktrees"
