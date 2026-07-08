@@ -176,6 +176,11 @@ fn list_issues_v1_top_level_filters_out_children() {
     let requests = server.requests();
     assert!(requests[0].starts_with("POST /graphql"), "unexpected request: {}", requests[0]);
     assert!(requests[0].contains("owner/repo") || requests[0].contains(r#""owner":"owner""#));
+    assert!(
+        requests[0].contains("CREATED_AT") && requests[0].contains("DESC"),
+        "issues must be requested newest first: {}",
+        requests[0]
+    );
 }
 
 #[test]

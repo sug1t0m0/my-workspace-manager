@@ -198,9 +198,10 @@ fn probe() -> Result<(), String> {
 /// トップレベル判定に必要な parent と、子 Issue の state 付きの
 /// open Issue ノード。
 fn open_issue_nodes(repo: &str) -> Result<Vec<Value>, String> {
+    // 並びは新しい順 (gh 版と同じ)。GraphQL の issues は無指定だと古い順になる
     const QUERY: &str = "query($owner: String!, $name: String!) {
       repository(owner: $owner, name: $name) {
-        issues(states: OPEN, first: 50) {
+        issues(states: OPEN, first: 50, orderBy: { field: CREATED_AT, direction: DESC }) {
           nodes { number title parent { number } subIssues(first: 50) { nodes { state } } }
         }
       }
