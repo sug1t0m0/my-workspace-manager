@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use wsm_shared::domains::{self as domain, RepoRef, WorkspaceId};
 
-const USAGE: &str = "Usage: wsm-server <list-projects|list-repos|list-issues|list-workspaces|list-devcontainer-configs|list-session-managers|list-trackers|open|remove>";
+const USAGE: &str = "Usage: wsm-server <list-repo-groups|list-repos|list-issues|list-workspaces|list-devcontainer-configs|list-session-managers|list-trackers|open|remove>";
 
 pub fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -29,8 +29,8 @@ fn run(args: &[String]) -> CmdResult {
     let home = std::env::var("HOME").map(PathBuf::from).map_err(|_| "HOME is not set")?;
     let (subcmd, rest) = args.split_first().ok_or(USAGE)?;
     match subcmd.as_str() {
-        "list-projects" => usecases::list_projects(&home),
-        "list-repos" => usecases::list_repos(&home, flag_value(rest, "--project")),
+        "list-repo-groups" => usecases::list_repo_groups(&home),
+        "list-repos" => usecases::list_repos(&home, flag_value(rest, "--group")),
         "list-issues" => usecases::list_issues(&home, &required_repo(rest)?),
         "list-workspaces" => usecases::list_workspaces(&home),
         "list-session-managers" => usecases::list_session_managers(&home),

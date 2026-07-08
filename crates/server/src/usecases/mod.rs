@@ -18,11 +18,11 @@ fn paths(home: &Path) -> domain::Paths {
     domain::Paths { home: home.to_owned(), worktree_root: settings::worktree_root(home) }
 }
 
-/// open なプロジェクトの一覧 (既定トラッカー)。トラッカー未設定は
+/// open な repo-group の一覧 (既定トラッカー)。トラッカー未設定は
 /// 対話フローの入り口で設定誤りを表面化させるため、縮退せずエラーにする。
-pub fn list_projects(home: &Path) -> CmdResult {
+pub fn list_repo_groups(home: &Path) -> CmdResult {
     let trackers = settings::trackers(home)?;
-    Ok(Value::Array(tracker::open_projects(trackers.default_plugin()?)))
+    Ok(Value::Array(tracker::repo_groups(trackers.default_plugin()?)))
 }
 
 /// 設定されたトラッカーの一覧と診断 (wsm doctor 用)。設定順で、
@@ -67,19 +67,19 @@ pub fn list_session_managers(home: &Path) -> CmdResult {
     ))
 }
 
-pub fn list_repos(home: &Path, project: Option<String>) -> CmdResult {
-    let project = project.unwrap_or_default();
+pub fn list_repos(home: &Path, group: Option<String>) -> CmdResult {
+    let group = group.unwrap_or_default();
 
-    let repos: Vec<RepoEntry> = if project.is_empty() || project == "none" {
+    let repos: Vec<RepoEntry> = if group.is_empty() || group == "none" {
         let mut entries = repostore::entries(home)?;
         entries.sort_by_key(|entry| entry.repo.ns_repo());
         entries
     } else {
-        // Tracker (Project 所属) と RepoStore (ローカルにある) の交差
-        let project = validated("project", project, domain::is_valid_project)?;
+        // Tracker (repo-group 所属) と RepoStore (ローカルにある) の交差
+        let group = validated("group", group, domain::is_valid_group)?;
         let plugin = settings::trackers(home)?.default_plugin()?.to_owned();
         let entries = repostore::entries(home)?;
-        tracker::project_repos(&plugin, &project)
+        tracker::repo_group_repos(&plugin, &group)
             .iter()
             .filter_map(|name| RepoRef::parse(name))
             .filter_map(|repo| entries.iter().find(|entry| entry.repo == repo))

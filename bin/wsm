@@ -165,24 +165,24 @@ _dc_indicator() {
   esac
 }
 
-# Step 1: プロジェクト選択
-_pick_project() {
+# Step 1: repo-group 選択 (リポジトリのグルーピング。GitHub では Projects)
+_pick_repo_group() {
   local TAB=$'\t'
 
-  local json=$(_server list-projects)
+  local json=$(_server list-repo-groups)
   local items=()
 
-  local projects=$(printf '%s\n' "$json" | jq -r '.[] | "\(.id)\t\(.title)"')
-  if [[ -n "$projects" ]]; then
-    while IFS=$'\t' read -r num title; do
-      items+=("${num}${TAB}${title}")
-    done <<< "$projects"
+  local groups=$(printf '%s\n' "$json" | jq -r '.[] | "\(.id)\t\(.title)"')
+  if [[ -n "$groups" ]]; then
+    while IFS=$'\t' read -r id title; do
+      items+=("${id}${TAB}${title}")
+    done <<< "$groups"
   fi
 
-  items+=("none${TAB}(プロジェクトなし)")
+  items+=("none${TAB}(グループなし: 全リポジトリ)")
 
   local selected=$(printf '%s\n' "${items[@]}" \
-    | fzf --with-nth=2.. --delimiter=$'\t' --height=40% --reverse --prompt="Project> ")
+    | fzf --with-nth=2.. --delimiter=$'\t' --height=40% --reverse --prompt="Repo group> ")
   if [[ -n "$selected" ]]; then
     printf '%s\n' "$selected" | cut -f1
   fi
@@ -190,10 +190,10 @@ _pick_project() {
 
 # Step 2: リポジトリ選択
 _pick_repo() {
-  local project_num=$1
+  local group_id=$1
   local TAB=$'\t'
 
-  local json=$(_server list-repos --project "$project_num")
+  local json=$(_server list-repos --group "$group_id")
   local count=$(printf '%s\n' "$json" | jq 'length')
 
   if [[ "$count" -eq 0 ]]; then
@@ -475,11 +475,11 @@ case "$cmd" in
         export WSM_SESSION_MANAGER=$selected_manager
       fi
 
-      # 段階選択: プロジェクト → リポジトリ → Issue → DevContainer
-      project_num=$(_pick_project)
-      [[ -z "$project_num" ]] && exit 0
+      # 段階選択: repo-group → リポジトリ → Issue → DevContainer
+      group_id=$(_pick_repo_group)
+      [[ -z "$group_id" ]] && exit 0
 
-      ns_repo=$(_pick_repo "$project_num")
+      ns_repo=$(_pick_repo "$group_id")
       [[ -z "$ns_repo" ]] && exit 0
 
       issue_id=$(_pick_issue "$ns_repo")

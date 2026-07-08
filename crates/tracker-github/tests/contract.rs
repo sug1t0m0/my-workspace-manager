@@ -105,7 +105,7 @@ impl TestEnv {
 }
 
 #[test]
-fn list_projects_filters_closed_and_maps_ids_to_strings() {
+fn repo_groups_filters_closed_and_maps_ids_to_strings() {
     // Arrange
     let env = TestEnv::new();
     env.stub("^gh api user -q .login$", "me\n").stub(
@@ -114,7 +114,7 @@ fn list_projects_filters_closed_and_maps_ids_to_strings() {
     );
 
     // Act
-    let out = env.run(&["list-projects-v0"]);
+    let out = env.run(&["list-repo-groups-v0"]);
 
     // Assert: closed は落ち、id は文字列
     assert_eq!(out.status, Some(0));
@@ -128,7 +128,7 @@ fn owner_env_override_skips_self_resolution() {
     env.stub("^gh project list --owner myorg --format json$", r#"{"projects":[]}"#);
 
     // Act
-    let out = env.run_env(&["list-projects-v0"], &[("WSM_TRACKER_GITHUB_OWNER", "myorg")]);
+    let out = env.run_env(&["list-repo-groups-v0"], &[("WSM_TRACKER_GITHUB_OWNER", "myorg")]);
 
     // Assert
     assert_eq!(out.status, Some(0));
@@ -141,14 +141,14 @@ fn owner_env_override_skips_self_resolution() {
 }
 
 #[test]
-fn project_repos_returns_ns_repo_array() {
+fn repo_group_repos_returns_ns_repo_array() {
     // Arrange
     let env = TestEnv::new();
     env.stub("^gh api user -q .login$", "me\n")
         .stub("^gh api graphql .* -F num=5 .*$", "owner/repo\nowner/tool\n");
 
     // Act
-    let out = env.run(&["project-repos-v0", "--project", "5"]);
+    let out = env.run(&["repo-group-repos-v0", "--group", "5"]);
 
     // Assert
     assert_eq!(out.status, Some(0));
@@ -156,12 +156,12 @@ fn project_repos_returns_ns_repo_array() {
 }
 
 #[test]
-fn project_repos_rejects_non_numeric_project() {
+fn repo_group_repos_rejects_non_numeric_group() {
     // Arrange: GitHub Projects の id は番号。他トラッカーの id 形式は弾く
     let env = TestEnv::new();
 
     // Act
-    let out = env.run(&["project-repos-v0", "--project", "CHH"]);
+    let out = env.run(&["repo-group-repos-v0", "--group", "CHH"]);
 
     // Assert
     assert_eq!(out.status, Some(1));

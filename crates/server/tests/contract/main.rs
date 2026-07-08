@@ -10,7 +10,7 @@ mod harness;
 use harness::TestEnv;
 use serde_json::json;
 
-const USAGE_ERROR: &str = "Usage: wsm-server <list-projects|list-repos|list-issues|list-workspaces|list-devcontainer-configs|list-session-managers|list-trackers|open|remove>";
+const USAGE_ERROR: &str = "Usage: wsm-server <list-repo-groups|list-repos|list-issues|list-workspaces|list-devcontainer-configs|list-session-managers|list-trackers|open|remove>";
 
 // --- ディスパッチ ---
 
@@ -41,19 +41,19 @@ fn usage_error_for_unknown_subcommand() {
     assert_eq!(out.stderr_json(), json!({ "error": USAGE_ERROR }));
 }
 
-// --- list-projects ---
+// --- list-repo-groups ---
 
 #[test]
-fn list_projects_returns_open_projects_as_array() {
+fn list_repo_groups_returns_open_groups_as_array() {
     // Arrange
     let env = TestEnv::new();
     env.stub(
-        "^tracker list-projects-v0$",
+        "^tracker list-repo-groups-v0$",
         r#"[{"id":"1","title":"Roadmap"},{"id":"3","title":"Backlog"}]"#,
     );
 
     // Act
-    let out = env.run(&["list-projects"]);
+    let out = env.run(&["list-repo-groups"]);
 
     // Assert: プラグインの返した順のまま
     assert_eq!(out.status, Some(0));
@@ -67,12 +67,12 @@ fn list_projects_returns_open_projects_as_array() {
 }
 
 #[test]
-fn list_projects_returns_empty_array_when_plugin_fails() {
+fn list_repo_groups_returns_empty_array_when_plugin_fails() {
     // Arrange: プラグインは未スタブ → 起動失敗相当 (認証切れ等)。照会は縮退する
     let env = TestEnv::new();
 
     // Act
-    let out = env.run(&["list-projects"]);
+    let out = env.run(&["list-repo-groups"]);
 
     // Assert
     assert_eq!(out.status, Some(0));
@@ -80,13 +80,13 @@ fn list_projects_returns_empty_array_when_plugin_fails() {
 }
 
 #[test]
-fn list_projects_fails_when_no_tracker_configured() {
+fn list_repo_groups_fails_when_no_tracker_configured() {
     // Arrange: [[tracker]] のない設定。対話フローの入り口なので縮退せず表面化させる
     let env = TestEnv::new();
     env.write_home(".config/wsm/config.toml", &env.managers_config(&["tmux", "herdr"]));
 
     // Act
-    let out = env.run(&["list-projects"]);
+    let out = env.run(&["list-repo-groups"]);
 
     // Assert
     assert_eq!(out.status, Some(1));
@@ -97,16 +97,16 @@ fn list_projects_fails_when_no_tracker_configured() {
 }
 
 #[test]
-fn list_projects_drops_items_with_invalid_ids() {
+fn list_repo_groups_drops_items_with_invalid_ids() {
     // Arrange: プラグインの出力は信頼しない入力。id の形に違反する要素は捨てる
     let env = TestEnv::new();
     env.stub(
-        "^tracker list-projects-v0$",
+        "^tracker list-repo-groups-v0$",
         r#"[{"id":"1","title":"Ok"},{"id":"../evil","title":"Bad"},{"id":7,"title":"NotString"}]"#,
     );
 
     // Act
-    let out = env.run(&["list-projects"]);
+    let out = env.run(&["list-repo-groups"]);
 
     // Assert
     assert_eq!(out.status, Some(0));
@@ -173,9 +173,9 @@ fn parameter_shapes_are_validated() {
         (&["remove", "--repo", "owner/repo", "--issue", "42;rm -rf"], "Invalid issue: 42;rm -rf"),
         (&["open", "--repo", "owner/repo", "--issue", "../42"], "Invalid issue: ../42"),
         (&["list-devcontainer-configs", "--repo", "owner/repo", "--issue", "-42"], "Invalid issue: -42"),
-        // project: issue と同じ不透明な id の文法
-        (&["list-repos", "--project", "5;x"], "Invalid project: 5;x"),
-        (&["list-repos", "--project", "-5"], "Invalid project: -5"),
+        // group: issue と同じ不透明な id の文法
+        (&["list-repos", "--group", "5;x"], "Invalid group: 5;x"),
+        (&["list-repos", "--group", "-5"], "Invalid group: -5"),
     ];
 
     for (args, expected) in cases {
@@ -221,13 +221,13 @@ fn dotted_repo_names_stay_valid() {
 }
 
 #[test]
-fn list_projects_preserves_backslashes_in_titles() {
-    // Arrange: タイトルにバックスラッシュを含む Project (JSON エスケープで保たれる)
+fn list_repo_groups_preserves_backslashes_in_titles() {
+    // Arrange: タイトルにバックスラッシュを含む repo-group (JSON エスケープで保たれる)
     let env = TestEnv::new();
-    env.stub("^tracker list-projects-v0$", r#"[{"id":"1","title":"Group \\ A"}]"#);
+    env.stub("^tracker list-repo-groups-v0$", r#"[{"id":"1","title":"Group \\ A"}]"#);
 
     // Act
-    let out = env.run(&["list-projects"]);
+    let out = env.run(&["list-repo-groups"]);
 
     // Assert
     assert_eq!(out.status, Some(0));
@@ -237,7 +237,7 @@ fn list_projects_preserves_backslashes_in_titles() {
 // --- list-repos ---
 
 #[test]
-fn list_repos_lists_all_ghq_repos_when_project_none() {
+fn list_repos_lists_all_ghq_repos_when_group_none() {
     // Arrange: host は github.com に限らない (サブグループ等の 4 セグメントは非対応)
     let env = TestEnv::new();
     env.stub(
@@ -246,7 +246,7 @@ fn list_repos_lists_all_ghq_repos_when_project_none() {
     );
 
     // Act
-    let out = env.run(&["list-repos", "--project", "none"]);
+    let out = env.run(&["list-repos", "--group", "none"]);
 
     // Assert: 全 host をソート済みで列挙。Tracker (gh) には触れない
     assert_eq!(out.status, Some(0));
@@ -260,7 +260,7 @@ fn list_repos_lists_all_ghq_repos_when_project_none() {
     );
     assert!(
         !env.invocations().iter().any(|l| l.starts_with("tracker ")),
-        "project none must not touch the tracker: {:?}",
+        "group none must not touch the tracker: {:?}",
         env.invocations()
     );
 }
@@ -283,7 +283,7 @@ fn list_repos_counts_active_workspaces() {
         .stub("^tmux has-session -t =owner_repo_42$", "");
 
     // Act
-    let out = env.run(&["list-repos", "--project", "none"]);
+    let out = env.run(&["list-repos", "--group", "none"]);
 
     // Assert
     assert_eq!(out.status, Some(0));
@@ -291,14 +291,14 @@ fn list_repos_counts_active_workspaces() {
 }
 
 #[test]
-fn list_repos_filters_project_repos_by_local_clones() {
-    // Arrange: Project には 2 リポジトリ、ローカルにあるのは片方だけ
+fn list_repos_filters_group_repos_by_local_clones() {
+    // Arrange: repo-group には 2 リポジトリ、ローカルにあるのは片方だけ
     let env = TestEnv::new();
-    env.stub("^tracker project-repos-v0 --project 5$", r#"["owner/repo","owner/other"]"#)
+    env.stub("^tracker repo-group-repos-v0 --group 5$", r#"["owner/repo","owner/other"]"#)
         .stub("^ghq list$", "github.com/owner/repo\ngithub.com/mine/tool\n");
 
     // Act
-    let out = env.run(&["list-repos", "--project", "5"]);
+    let out = env.run(&["list-repos", "--group", "5"]);
 
     // Assert
     assert_eq!(out.status, Some(0));
@@ -380,7 +380,7 @@ fn custom_repo_appears_in_list_repos() {
     env.write_home(".config/wsm/config.toml", &config);
 
     // Act
-    let out = env.run(&["list-repos", "--project", "none"]);
+    let out = env.run(&["list-repos", "--group", "none"]);
 
     // Assert: ソース (ghq / 設定) を問わず同じ一覧に出る
     assert_eq!(out.status, Some(0));
@@ -436,7 +436,7 @@ fn invalid_repo_entry_in_config_fails_loudly() {
     env.write_home(".config/wsm/config.toml", &config);
 
     // Act
-    let out = env.run(&["list-repos", "--project", "none"]);
+    let out = env.run(&["list-repos", "--group", "none"]);
 
     // Assert
     assert_eq!(out.status, Some(1));
@@ -1692,7 +1692,7 @@ fn list_repos_returns_empty_array_when_ghq_fails() {
     env.stub_exit("^ghq list$", "", 1);
 
     // Act
-    let out = env.run(&["list-repos", "--project", "none"]);
+    let out = env.run(&["list-repos", "--group", "none"]);
 
     // Assert: 無言の exit 1 ではなく、空配列で成功する
     assert_eq!(out.status, Some(0));

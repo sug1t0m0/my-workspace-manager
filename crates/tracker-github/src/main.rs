@@ -13,10 +13,10 @@ use serde_json::{json, Value};
 use std::process::{Command, ExitCode};
 
 const USAGE: &str =
-    "Usage: wsm-tracker-github <list-projects-v0|project-repos-v0|list-issues-v0|issue-v0|info-v0>";
+    "Usage: wsm-tracker-github <list-repo-groups-v0|repo-group-repos-v0|list-issues-v0|issue-v0|info-v0>";
 
 const PROTOCOL: &[&str] =
-    &["list-projects-v0", "project-repos-v0", "list-issues-v0", "issue-v0", "info-v0"];
+    &["list-repo-groups-v0", "repo-group-repos-v0", "list-issues-v0", "issue-v0", "info-v0"];
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -35,8 +35,8 @@ fn main() -> ExitCode {
 fn run(args: &[String]) -> Result<Value, String> {
     let (verb, rest) = args.split_first().ok_or(USAGE)?;
     match verb.as_str() {
-        "list-projects-v0" => list_projects(),
-        "project-repos-v0" => project_repos(&flag(rest, "--project")?),
+        "list-repo-groups-v0" => list_repo_groups(),
+        "repo-group-repos-v0" => repo_group_repos(&flag(rest, "--group")?),
         "list-issues-v0" => list_issues(&flag(rest, "--repo")?),
         "issue-v0" => issue(&flag(rest, "--repo")?, &flag(rest, "--id")?),
         "info-v0" => Ok(info()),
@@ -46,8 +46,9 @@ fn run(args: &[String]) -> Result<Value, String> {
     }
 }
 
-/// open なプロジェクトの {id, title} の列。id は Project 番号の文字列表現。
-fn list_projects() -> Result<Value, String> {
+/// open な repo-group の {id, title} の列。GitHub での repo-group の実体は
+/// Projects (V2) で、id は Project 番号の文字列表現。
+fn list_repo_groups() -> Result<Value, String> {
     let owner = owner()?;
     let out = gh(&["project", "list", "--owner", &owner, "--format", "json"])?;
     let v: Value = serde_json::from_str(&out).map_err(|e| format!("unexpected gh output: {e}"))?;
@@ -67,11 +68,11 @@ fn list_projects() -> Result<Value, String> {
     Ok(Value::Array(projects))
 }
 
-/// プロジェクトに属するリポジトリの ns_repo の列。
+/// repo-group (= GitHub Project) に属するリポジトリの ns_repo の列。
 /// repositoryOwner はユーザー・organization の両方を解決できる。
-fn project_repos(project: &str) -> Result<Value, String> {
+fn repo_group_repos(group: &str) -> Result<Value, String> {
     let number: u64 =
-        project.parse().map_err(|_| format!("Invalid project: {project} (GitHub Projects の id は番号)"))?;
+        group.parse().map_err(|_| format!("Invalid group: {group} (GitHub Projects の id は番号)"))?;
     const QUERY: &str = "\n      query($owner: String!, $num: Int!) {\n        repositoryOwner(login: $owner) {\n          ... on User {\n            projectV2(number: $num) {\n              repositories(first: 100) {\n                nodes { nameWithOwner }\n              }\n            }\n          }\n          ... on Organization {\n            projectV2(number: $num) {\n              repositories(first: 100) {\n                nodes { nameWithOwner }\n              }\n            }\n          }\n        }\n      }";
     let owner = owner()?;
     let out = gh(&[

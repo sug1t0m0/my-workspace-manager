@@ -153,10 +153,10 @@ pub fn is_valid_user(value: &str) -> bool {
         && chars.all(|c| c.is_ascii_alphanumeric() || c == '-')
 }
 
-/// project: issue と同じ不透明な id の文法 (英数と `-`、先頭は英数)。
+/// repo-group: issue と同じ不透明な id の文法 (英数と `-`、先頭は英数)。
 /// トラッカーが発行する id (GitHub Projects の番号、Jira のキー等) を許容する。
 /// `none` は list-repos が検証の前に処理する。
-pub fn is_valid_project(value: &str) -> bool {
+pub fn is_valid_group(value: &str) -> bool {
     is_valid_issue(value)
 }
 

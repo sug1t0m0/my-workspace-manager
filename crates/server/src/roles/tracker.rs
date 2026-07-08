@@ -17,21 +17,22 @@ fn call(bin: &Path, args: &[&str]) -> Option<Value> {
     exec::stdout_if_ok(bin, args).and_then(|out| serde_json::from_str(&out).ok())
 }
 
-/// open なプロジェクトの {id, title} の列。取得できなければ空。
-pub fn open_projects(bin: &Path) -> Vec<Value> {
-    call(bin, &["list-projects-v0"])
+/// open な repo-group (リポジトリのグルーピング) の {id, title} の列。
+/// 取得できなければ空。
+pub fn repo_groups(bin: &Path) -> Vec<Value> {
+    call(bin, &["list-repo-groups-v0"])
         .and_then(|v| v.as_array().cloned())
-        .map(|items| items.into_iter().filter(valid_project).collect())
+        .map(|items| items.into_iter().filter(valid_group).collect())
         .unwrap_or_default()
 }
 
-fn valid_project(item: &Value) -> bool {
-    item["id"].as_str().is_some_and(domain::is_valid_project) && item["title"].is_string()
+fn valid_group(item: &Value) -> bool {
+    item["id"].as_str().is_some_and(domain::is_valid_group) && item["title"].is_string()
 }
 
-/// プロジェクトに属するリポジトリの ns_repo 一覧。取得できなければ空。
-pub fn project_repos(bin: &Path, project: &str) -> Vec<String> {
-    call(bin, &["project-repos-v0", "--project", project])
+/// repo-group に属するリポジトリの ns_repo 一覧。取得できなければ空。
+pub fn repo_group_repos(bin: &Path, group: &str) -> Vec<String> {
+    call(bin, &["repo-group-repos-v0", "--group", group])
         .and_then(|v| v.as_array().cloned())
         .map(|items| {
             items

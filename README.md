@@ -1,7 +1,7 @@
 # my-workspace-manager (wsm)
 
-GitHub の Project / Issue を起点に、リポジトリのワークスペース (git worktree +
-ターミナルセッション + DevContainer) を開閉するツール。
+トラッカーの repo-group / Issue を起点に、リポジトリのワークスペース
+(git worktree + ターミナルセッション + DevContainer) を開閉するツール。
 
 設計・仕様の詳細は [docs/wsm.md](docs/wsm.md) を参照。
 
