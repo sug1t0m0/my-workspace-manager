@@ -47,7 +47,7 @@ fn is_valid_repo_name(name: &str) -> bool {
         && name.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '.' | '-'))
 }
 
-/// Workspace の id。`main` はリポジトリ本体、それ以外は Issue 番号の worktree。
+/// Workspace の id。`main` はリポジトリ本体、それ以外は Issue id の worktree。
 #[derive(Clone, PartialEq, Eq)]
 pub enum WorkspaceId {
     Main,
@@ -103,7 +103,7 @@ pub fn herdr_session_name(repo: &RepoRef) -> String {
 }
 
 /// herdr の workspace ラベル。main はリポジトリ名 (アタッチ時に見える名前)、
-/// Issue は Issue 番号。
+/// Issue は Issue id。
 pub fn herdr_workspace_label(repo: &RepoRef, id: &WorkspaceId) -> String {
     match id {
         WorkspaceId::Main => repo.repo().to_owned(),
@@ -125,9 +125,13 @@ pub fn tmux_session_name(repo: &RepoRef, id: &WorkspaceId) -> String {
 // --- 引数検証 (SSH 経由で呼ばれるため必須) ---
 // repo の検証は RepoRef::parse が兼ねる。
 
-/// issue: `main` または数字のみ。
+/// issue: `main` (予約) または英数と `-` (先頭は英数)。トラッカーが発行する
+/// 不透明な id を許容する (GitHub の `42`、Jira の `CHH-111` など)。
+/// 先頭 `-` の禁止でオプション注入を、`.` `/` の禁止でパストラバーサルを弾く。
 pub fn is_valid_issue(value: &str) -> bool {
-    value == "main" || (!value.is_empty() && value.chars().all(|c| c.is_ascii_digit()))
+    let mut chars = value.chars();
+    chars.next().is_some_and(|c| c.is_ascii_alphanumeric())
+        && chars.all(|c| c.is_ascii_alphanumeric() || c == '-')
 }
 
 /// user: 英数と `-` (先頭は英数)。GitHub の user / org 名の規則。

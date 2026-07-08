@@ -3,7 +3,7 @@
 //! Workspace とセッションの対応は実装ごとに異なる:
 //! - tmux: Workspace ごとに 1 セッション (`<ns>_<repo>(_<id>)`)
 //! - herdr: リポジトリ単位のセッション (`<ns>.<repo>`) に、Issue ごとの
-//!   workspace (ラベル = Issue 番号) を追加する。セッション外からの workspace
+//!   workspace (ラベル = Issue id) を追加する。セッション外からの workspace
 //!   操作は HERDR_SOCKET_PATH で対象セッションの socket を指定して行う
 //!
 //! バイナリは設定 (tmux_path / herdr_path) のパスで起動する (PATH 非依存)。
@@ -90,18 +90,18 @@ fn herdr_stop_and_delete(bin: &Path, session: &str) {
     exec::run_ignoring_failure(bin, &["session", "delete", session, "--json"]);
 }
 
-fn is_issue_label(label: &str) -> bool {
-    !label.is_empty() && label.chars().all(|c| c.is_ascii_digit())
-}
-
-/// herdr のセッションに wsm 管理の Issue workspace が残っているか。
+/// herdr のセッションに main 以外の workspace が残っているか。
 /// main の remove を拒否する判定に使う (合成はオーケストレーション層)。
+/// Issue id が不透明な文字列 (Jira の `CHH-111` 等) になったため、ラベルの
+/// 形では wsm 管理かを判別できない。main ラベル以外はすべて「開いている
+/// 作業」とみなして保護する (wsm 外で作られた workspace も含む)。
 pub fn herdr_blocks_main_removal(repo: &RepoRef, managers: &Managers) -> bool {
     let Some(bin) = managers.path(SessionManager::Herdr) else { return false };
     let session = domain::herdr_session_name(repo);
+    let main_label = domain::herdr_workspace_label(repo, &WorkspaceId::Main);
     herdr_session_running(bin, &session)
         && herdr_socket_path(bin, &session).is_some_and(|sock| {
-            herdr_workspaces(bin, &sock).iter().any(|(_, label)| is_issue_label(label))
+            herdr_workspaces(bin, &sock).iter().any(|(_, label)| *label != main_label)
         })
 }
 

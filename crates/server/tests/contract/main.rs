@@ -168,9 +168,10 @@ fn parameter_shapes_are_validated() {
         (&["list-issues", "--repo", "a/b/c"], "Invalid repo: a/b/c"),
         (&["list-issues", "--repo", "../repo"], "Invalid repo: ../repo"),
         (&["list-issues", "--repo", "-owner/repo"], "Invalid repo: -owner/repo"),
-        // issue: main または数字のみ
-        (&["open", "--repo", "owner/repo", "--issue", "abc"], "Invalid issue: abc"),
-        (&["remove", "--repo", "owner/repo", "--issue", "12x"], "Invalid issue: 12x"),
+        // issue: 英数と - のみ (先頭は英数)。メタ文字・トラバーサル・オプション注入を弾く
+        (&["open", "--repo", "owner/repo", "--issue", "CHH_111"], "Invalid issue: CHH_111"),
+        (&["remove", "--repo", "owner/repo", "--issue", "42;rm -rf"], "Invalid issue: 42;rm -rf"),
+        (&["open", "--repo", "owner/repo", "--issue", "../42"], "Invalid issue: ../42"),
         (&["list-devcontainer-configs", "--repo", "owner/repo", "--issue", "-42"], "Invalid issue: -42"),
         // user: 英数と - のみ / project: 数字のみ
         (&["list-projects", "--user", "bad_user"], "Invalid user: bad_user"),
@@ -612,6 +613,33 @@ fn open_issue_creates_worktree_branch_and_session() {
     );
 }
 
+#[test]
+fn open_issue_accepts_tracker_style_ids() {
+    // Arrange: Jira 形式の Issue id (CHH-111)。worktree もブランチも存在しない
+    let env = TestEnv::new();
+    env.stub("worktree add --relative-paths -b feature/CHH-111 ", "")
+        .stub("^tmux new-session -d -s owner_repo_CHH-111 -c ", "");
+    let home = env.home_str();
+    let worktree_path = format!("{home}/worktrees/github.com/owner/repo/CHH-111");
+
+    // Act
+    let out = env.run(&["open", "--repo", "owner/repo", "--issue", "CHH-111"]);
+
+    // Assert: 数字の id と同じ導出規則 (ブランチ・セッション名・パス) が適用される
+    assert_eq!(out.status, Some(0));
+    let v = out.stdout_json();
+    assert_eq!(v["status"], "ok");
+    assert_eq!(v["session"], "owner_repo_CHH-111");
+    assert_eq!(v["path"], worktree_path.as_str());
+    assert!(
+        env.invocations().contains(&format!(
+            "git -C {home}/ghq/github.com/owner/repo worktree add --relative-paths -b feature/CHH-111 {worktree_path}"
+        )),
+        "worktree must be added with a new feature branch: {:?}",
+        env.invocations()
+    );
+}
+
 // --- セッションマネージャーの設定 ---
 
 #[test]
@@ -956,13 +984,13 @@ fn remove_last_herdr_issue_workspace_stops_the_session() {
 
 #[test]
 fn remove_main_with_herdr_refuses_while_issue_workspaces_remain() {
-    // Arrange: セッションに Issue workspace (数字ラベル) が残っている
+    // Arrange: セッションに main 以外の workspace (Jira 形式の Issue id) が残っている
     let env = TestEnv::new();
     let home = env.home_str();
     let sock = herdr_sock(&home);
     env.stub("^herdr session list --json$", &herdr_sessions_json(&home, true)).stub(
         &format!("^HERDR_SOCKET_PATH={sock} herdr workspace list$"),
-        &herdr_workspaces_json(&[("w1", "my-workspace-manager"), ("w7", "42")]),
+        &herdr_workspaces_json(&[("w1", "my-workspace-manager"), ("w7", "CHH-111")]),
     );
 
     // Act
@@ -983,14 +1011,14 @@ fn remove_main_with_herdr_refuses_while_issue_workspaces_remain() {
 
 #[test]
 fn remove_main_with_herdr_stops_session_when_no_issue_workspaces() {
-    // Arrange: Issue workspace は残っていない (自動作成の workspace のみ)
+    // Arrange: main workspace (ラベル = リポジトリ名) 以外は残っていない
     let env = TestEnv::new();
     let home = env.home_str();
     let sock = herdr_sock(&home);
     env.stub("^herdr session list --json$", &herdr_sessions_json(&home, true))
         .stub(
             &format!("^HERDR_SOCKET_PATH={sock} herdr workspace list$"),
-            &herdr_workspaces_json(&[("w1", "my-workspace-manager")]),
+            &herdr_workspaces_json(&[("w1", "repo")]),
         )
         .stub("^herdr session stop owner\\.repo --json$", "")
         .stub("^herdr session delete owner\\.repo --json$", "")
