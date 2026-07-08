@@ -461,6 +461,27 @@ fn list_issues_preserves_backslash_sequences_in_titles() {
     );
 }
 
+// --- パス導出の基点 ---
+
+#[test]
+fn respects_custom_ghq_root() {
+    // Arrange: ghq root が既定 (~/ghq) 以外の場所を返す
+    let env = TestEnv::new();
+    let home = env.home_str();
+    env.stub("^ghq root$", &format!("{home}/src\n"))
+        .write_home("src/github.com/owner/repo/.devcontainer/devcontainer.json", "{}");
+
+    // Act
+    let out = env.run(&["list-devcontainer-configs", "--repo", "owner/repo", "--issue", "main"]);
+
+    // Assert: パス導出が ghq root に追随する
+    assert_eq!(out.status, Some(0));
+    assert_eq!(
+        out.stdout_json()[0]["path"],
+        format!("{home}/src/github.com/owner/repo/.devcontainer/devcontainer.json")
+    );
+}
+
 // --- list-devcontainer-configs ---
 
 #[test]

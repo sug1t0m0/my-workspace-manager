@@ -2,8 +2,18 @@
 //! github.com 固定は現行実装の制約 (docs/wsm.md の拡張点を参照)。
 //! 出力は RepoRef にパースし、形の不正な行は捨てる。
 
-use wsm_shared::domains::RepoRef;
 use crate::infra::exec;
+use std::path::{Path, PathBuf};
+use wsm_shared::domains::RepoRef;
+
+/// ghq のルート (`ghq root` を尊重。取得できなければ ~/ghq)。
+pub fn root(home: &Path) -> PathBuf {
+    exec::stdout_if_ok("ghq", &["root"])
+        .and_then(|out| {
+            out.lines().next().map(str::trim).filter(|line| !line.is_empty()).map(PathBuf::from)
+        })
+        .unwrap_or_else(|| home.join("ghq"))
+}
 
 /// ローカルにあるリポジトリの一覧 (`ghq list`、ns_repo の文字列順)。
 pub fn list() -> Vec<RepoRef> {

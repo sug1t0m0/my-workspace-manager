@@ -129,7 +129,7 @@ pub fn ensure(
     repo: &RepoRef,
     id: &WorkspaceId,
     cwd: &Path,
-    home: &Path,
+    paths: &domain::Paths,
 ) -> Result<String, String> {
     match manager {
         SessionManager::Tmux => {
@@ -158,7 +158,7 @@ pub fn ensure(
             let main_label = domain::herdr_workspace_label(repo, &WorkspaceId::Main);
             match (herdr_workspace_id(&sock, &main_label), opening_main) {
                 (None, _) => {
-                    let ghq = domain::ghq_path(home, repo);
+                    let ghq = domain::ghq_path(paths, repo);
                     let ghq = ghq.to_string_lossy();
                     let focus_flag = if opening_main { "--focus" } else { "--no-focus" };
                     exec::stdout_if_ok_env(

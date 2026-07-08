@@ -111,7 +111,7 @@ Workspace は中心となるエンティティ。`(RepoRef, id)` の組で一意
 
 | id | 実体 | パス | ブランチ |
 |---|---|---|---|
-| `main` | クローン本体 (RepoStore) | `~/ghq/<host>/<ns_repo>` | (そのまま) |
+| `main` | クローン本体 (RepoStore) | `<ghq root>/<host>/<ns_repo>` | (そのまま) |
 | Issue 番号 | git worktree | `~/worktrees/<host>/<ns_repo>/<id>` | `feature/<id>` |
 
 パス・ブランチ名の導出は server のみが行う。クライアントは導出規則を持たず、
@@ -199,7 +199,8 @@ organization でも同じように動く。
 - list(): ローカルにある RepoRef の一覧
 - path(repo): クローン本体のパス
 
-現在の実装: ghq (`~/ghq/<host>/<ns_repo>`)。クローンの作成 (`ghq get`) は
+現在の実装: ghq。ルートは `ghq root` コマンドで解決する (既定 `~/ghq`。
+ghq.root を変えている環境にも追随する)。クローンの作成 (`ghq get`) は
 現状 wsm のスコープ外。
 
 `list-repos` の「Project に属し、かつローカルにもある」という絞り込みは、
@@ -327,6 +328,8 @@ Workspace 上で起動するコンテナ。1 つの Workspace に複数の設定
 worktree の Workspace では、worktree 本体と git common dir の両方を
 `/workspaces/` 配下に $HOME 相対パスを保ってマウントし、コンテナ内パスを
 `WSM_WORKTREE_PATH` / `WSM_WORKTREE_COMMON_DIR` として remote-env で渡す。
+既知の制約: コンテナ内パスを $HOME 相対で組むため、ghq のルートと
+worktree のルートは $HOME 配下にあることを前提とする。
 
 起動後、オーケストレーション層はコンテナへ `docker exec` で入るウィンドウ
 (🐳) をセッションに追加する。責務の分割:
@@ -640,8 +643,8 @@ SSH ホワイトリストは `wsm-server` エントリだけで足りる。
 以下は設定にせず、ツールの規約とする(個人ツールであり、可変にする
 メンテナンスコストに見合わないため)。
 
-- リポジトリは `~/ghq/<host>/` 配下(現行実装が対応する host は
-  github.com のみ)
+- リポジトリは ghq のルート配下 (`ghq root` で解決。既定 `~/ghq`)。
+  対応 host は github.com のみ
 - worktree は `~/worktrees/<host>/` 配下
 - worktree のブランチは `feature/<id>`
 

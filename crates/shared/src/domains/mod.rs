@@ -70,15 +70,24 @@ impl WorkspaceId {
     }
 }
 
-pub fn ghq_path(home: &Path, repo: &RepoRef) -> PathBuf {
-    home.join("ghq/github.com").join(repo.ns()).join(repo.repo())
+/// パス導出の基点。ghq_root は RepoStore (ghq) が管理するルート (`ghq root`)、
+/// worktree_root は worktree の置き場。値の解決は境界 (usecases) が行い、
+/// ドメインは受け取った値から純粋に導出する。
+pub struct Paths {
+    pub home: PathBuf,
+    pub ghq_root: PathBuf,
+    pub worktree_root: PathBuf,
 }
 
-pub fn workspace_path(home: &Path, repo: &RepoRef, id: &WorkspaceId) -> PathBuf {
+pub fn ghq_path(paths: &Paths, repo: &RepoRef) -> PathBuf {
+    paths.ghq_root.join("github.com").join(repo.ns()).join(repo.repo())
+}
+
+pub fn workspace_path(paths: &Paths, repo: &RepoRef, id: &WorkspaceId) -> PathBuf {
     match id {
-        WorkspaceId::Main => ghq_path(home, repo),
+        WorkspaceId::Main => ghq_path(paths, repo),
         WorkspaceId::Issue(issue) => {
-            home.join("worktrees/github.com").join(repo.ns()).join(repo.repo()).join(issue)
+            paths.worktree_root.join("github.com").join(repo.ns()).join(repo.repo()).join(issue)
         }
     }
 }

@@ -64,8 +64,18 @@ _config_get() {
 
 # --- Helpers ---
 
+# ghq のルート (`ghq root` を尊重。取得できなければ ~/ghq)。
+typeset -g _ghq_root_cache=""
+_ghq_root() {
+  if [[ -z "$_ghq_root_cache" ]]; then
+    _ghq_root_cache=$(ghq root 2>/dev/null | head -1) || true
+    _ghq_root_cache=${_ghq_root_cache:-$HOME/ghq}
+  fi
+  echo "$_ghq_root_cache"
+}
+
 _ghq_path() {
-  echo "$HOME/ghq/github.com/$1"
+  echo "$(_ghq_root)/github.com/$1"
 }
 
 # Resolve the GitHub user via gh. Used when --user is omitted so that
@@ -78,7 +88,7 @@ _gh_user() {
 _workspace_path() {
   local ns_repo=$1 id=$2
   if [[ "$id" == "main" ]]; then
-    echo "$HOME/ghq/github.com/${ns_repo}"
+    _ghq_path "$ns_repo"
   else
     echo "$HOME/worktrees/github.com/${ns_repo}/${id}"
   fi
@@ -335,7 +345,7 @@ _devcontainer_state() {
 # Echos "<container_worktree>\t<container_common>".
 _devcontainer_paths() {
   local ns_repo=$1 worktree_path=$2
-  local common_dir="$HOME/ghq/github.com/${ns_repo}/.git"
+  local common_dir="$(_ghq_path "$ns_repo")/.git"
   local container_worktree="/workspaces/${worktree_path#$HOME/}"
   local container_common="/workspaces/${common_dir#$HOME/}"
   printf '%s\t%s\n' "$container_worktree" "$container_common"
@@ -444,12 +454,8 @@ _devcontainer_exec_command() {
     --filter "label=wsm.config=$cname" 2>/dev/null | head -1)
   [[ -z "$cid" ]] && return 0
 
-  local container_workdir
-  if [[ "$id" == "main" ]]; then
-    container_workdir="/workspaces/ghq/github.com/${ns_repo}"
-  else
-    container_workdir="/workspaces/worktrees/github.com/${ns_repo}/${id}"
-  fi
+  # コンテナ内 workdir はホストパスの $HOME 相対 (devcontainers/cli のマウント規則)
+  local container_workdir="/workspaces/${ws#$HOME/}"
 
   # Honor remoteUser from devcontainer.metadata so file ownership matches host UID.
   local remote_user
