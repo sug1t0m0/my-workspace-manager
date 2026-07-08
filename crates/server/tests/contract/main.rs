@@ -173,6 +173,9 @@ fn parameter_shapes_are_validated() {
         (&["remove", "--repo", "owner/repo", "--issue", "42;rm -rf"], "Invalid issue: 42;rm -rf"),
         (&["open", "--repo", "owner/repo", "--issue", "../42"], "Invalid issue: ../42"),
         (&["list-devcontainer-configs", "--repo", "owner/repo", "--issue", "-42"], "Invalid issue: -42"),
+        // parent: issue と同じ文法。番兵値 main は親になれない
+        (&["list-issues", "--repo", "owner/repo", "--parent", "../4"], "Invalid parent: ../4"),
+        (&["list-issues", "--repo", "owner/repo", "--parent", "main"], "Invalid parent: main"),
         // group: issue と同じ不透明な id の文法
         (&["list-repos", "--group", "5;x"], "Invalid group: 5;x"),
         (&["list-repos", "--group", "-5"], "Invalid group: -5"),
@@ -461,7 +464,7 @@ fn list_issues_degrades_to_main_when_no_tracker_configured() {
     assert_eq!(
         out.stdout_json(),
         json!([
-            { "id": "main", "title": "main", "active": false, "closed": false, "devcontainer": "none" },
+            { "id": "main", "title": "main", "active": false, "closed": false, "devcontainer": "none", "has_children": false },
         ])
     );
 }
@@ -578,7 +581,7 @@ fn invalid_issue_ids_from_plugin_are_dropped() {
     // Arrange: プラグインの出力は信頼しない入力。id の文法違反と番兵値 main は捨てる
     let env = TestEnv::new();
     env.stub("^docker ps -a", "").stub(
-        "^tracker list-issues-v0 --repo owner/repo$",
+        "^tracker list-issues-v1 --repo owner/repo$",
         r#"[{"id":"42","title":"Ok"},{"id":"../evil","title":"Bad"},{"id":"main","title":"Sentinel"}]"#,
     );
 
@@ -590,8 +593,8 @@ fn invalid_issue_ids_from_plugin_are_dropped() {
     assert_eq!(
         out.stdout_json(),
         json!([
-            { "id": "main", "title": "main", "active": false, "closed": false, "devcontainer": "none" },
-            { "id": "42", "title": "Ok", "active": false, "closed": false, "devcontainer": "none" },
+            { "id": "main", "title": "main", "active": false, "closed": false, "devcontainer": "none", "has_children": false },
+            { "id": "42", "title": "Ok", "active": false, "closed": false, "devcontainer": "none", "has_children": false },
         ])
     );
 }
@@ -652,11 +655,36 @@ fn list_workspaces_lists_main_and_worktree_entries() {
 
 #[test]
 fn list_issues_combines_main_and_open_issues() {
-    // Arrange
+    // Arrange: 階層対応プラグイン (list-issues-v1)。42 は子 Issue を持つ
+    let env = TestEnv::new();
+    env.stub("^docker ps -a", "").stub(
+        "^tracker list-issues-v1 --repo owner/repo$",
+        r#"[{"id":"42","title":"Fix bug","has_children":true},{"id":"43","title":"Add feature"}]"#,
+    );
+
+    // Act
+    let out = env.run(&["list-issues", "--repo", "owner/repo"]);
+
+    // Assert: has_children はそのまま透過し、省略は false に補われる
+    assert_eq!(out.status, Some(0));
+    assert_eq!(
+        out.stdout_json(),
+        json!([
+            { "id": "main", "title": "main", "active": false, "closed": false, "devcontainer": "none", "has_children": false },
+            { "id": "42", "title": "Fix bug", "active": false, "closed": false, "devcontainer": "none", "has_children": true },
+            { "id": "43", "title": "Add feature", "active": false, "closed": false, "devcontainer": "none", "has_children": false },
+        ])
+    );
+}
+
+#[test]
+fn list_issues_falls_back_to_v0_for_legacy_plugins() {
+    // Arrange: v1 を知らないプラグイン (未知の動詞 → 非ゼロ)。v0 に落ちて
+    // has_children は false に補われる
     let env = TestEnv::new();
     env.stub("^docker ps -a", "").stub(
         "^tracker list-issues-v0 --repo owner/repo$",
-        r#"[{"id":"42","title":"Fix bug"},{"id":"43","title":"Add feature"}]"#,
+        r#"[{"id":"42","title":"Fix bug"}]"#,
     );
 
     // Act
@@ -667,17 +695,45 @@ fn list_issues_combines_main_and_open_issues() {
     assert_eq!(
         out.stdout_json(),
         json!([
-            { "id": "main", "title": "main", "active": false, "closed": false, "devcontainer": "none" },
-            { "id": "42", "title": "Fix bug", "active": false, "closed": false, "devcontainer": "none" },
-            { "id": "43", "title": "Add feature", "active": false, "closed": false, "devcontainer": "none" },
+            { "id": "main", "title": "main", "active": false, "closed": false, "devcontainer": "none", "has_children": false },
+            { "id": "42", "title": "Fix bug", "active": false, "closed": false, "devcontainer": "none", "has_children": false },
+        ])
+    );
+    let invocations = env.invocations();
+    assert!(
+        invocations.contains(&"tracker list-issues-v1 --repo owner/repo".to_owned()),
+        "v1 must be tried first: {invocations:?}"
+    );
+}
+
+#[test]
+fn list_issues_with_parent_lists_children_only() {
+    // Arrange: 階層のドリルダウン。main と孤児はトップレベル専用
+    let env = TestEnv::new();
+    env.stub("^docker ps -a", "").stub(
+        "^tracker list-issues-v1 --repo owner/repo --parent 42$",
+        r#"[{"id":"421","title":"Child A","has_children":true},{"id":"422","title":"Child B"}]"#,
+    );
+
+    // Act
+    let out = env.run(&["list-issues", "--repo", "owner/repo", "--parent", "42"]);
+
+    // Assert: main 行はなく、子 Issue だけが返る
+    assert_eq!(out.status, Some(0));
+    assert_eq!(
+        out.stdout_json(),
+        json!([
+            { "id": "421", "title": "Child A", "active": false, "closed": false, "devcontainer": "none", "has_children": true },
+            { "id": "422", "title": "Child B", "active": false, "closed": false, "devcontainer": "none", "has_children": false },
         ])
     );
 }
 
 #[test]
-fn list_issues_shows_orphaned_worktrees_as_closed_in_worktree_order() {
-    // Arrange: Issue 41, 42 は open 一覧に出てこない (closed) が、
-    // worktree とセッションが残っている。43 だけが open
+fn list_issues_shows_orphaned_worktrees_with_real_state_in_worktree_order() {
+    // Arrange: Issue 41, 42 はトップレベルの open 一覧に出てこないが、
+    // worktree とセッションが残っている。41 は closed、42 は open な子 Issue
+    // (階層化により「一覧にない = closed」とは限らなくなった)
     let env = TestEnv::new();
     let home = env.home_str();
     env.write_home("ghq/github.com/owner/repo/.gitkeep", "")
@@ -692,22 +748,23 @@ fn list_issues_shows_orphaned_worktrees_as_closed_in_worktree_order() {
         .stub("^tmux has-session -t =owner_repo_41$", "")
         .stub("^tmux has-session -t =owner_repo_42$", "")
         .stub("^docker ps -a", "")
-        .stub("^tracker list-issues-v0 --repo owner/repo$", r#"[{"id":"43","title":"Other work"}]"#)
+        .stub("^tracker list-issues-v1 --repo owner/repo$", r#"[{"id":"43","title":"Other work"}]"#)
         .stub("^tracker issue-v0 --repo owner/repo --id 41$", r#"{"title":"Old bug","state":"closed"}"#)
-        .stub("^tracker issue-v0 --repo owner/repo --id 42$", r#"{"title":"Stale spike","state":"closed"}"#);
+        .stub("^tracker issue-v0 --repo owner/repo --id 42$", r#"{"title":"Deep child","state":"open"}"#);
 
     // Act
     let out = env.run(&["list-issues", "--repo", "owner/repo"]);
 
-    // Assert: 孤児は closed:true & active:true で、worktree 一覧順に並ぶ
+    // Assert: 孤児は active:true・closed は Tracker の実際の state で、
+    // worktree 一覧順に並ぶ
     assert_eq!(out.status, Some(0));
     assert_eq!(
         out.stdout_json(),
         json!([
-            { "id": "main", "title": "main", "active": false, "closed": false, "devcontainer": "none" },
-            { "id": "43", "title": "Other work", "active": false, "closed": false, "devcontainer": "none" },
-            { "id": "41", "title": "Old bug", "active": true, "closed": true, "devcontainer": "none" },
-            { "id": "42", "title": "Stale spike", "active": true, "closed": true, "devcontainer": "none" },
+            { "id": "main", "title": "main", "active": false, "closed": false, "devcontainer": "none", "has_children": false },
+            { "id": "43", "title": "Other work", "active": false, "closed": false, "devcontainer": "none", "has_children": false },
+            { "id": "41", "title": "Old bug", "active": true, "closed": true, "devcontainer": "none", "has_children": false },
+            { "id": "42", "title": "Deep child", "active": true, "closed": false, "devcontainer": "none", "has_children": false },
         ])
     );
 }
@@ -723,7 +780,7 @@ fn list_issues_aggregates_devcontainer_states() {
             "exited\nrunning\n",
         )
         .stub(
-            "^tracker list-issues-v0 --repo owner/repo$",
+            "^tracker list-issues-v1 --repo owner/repo$",
             r#"[{"id":"42","title":"Fix bug"},{"id":"43","title":"Add feature"}]"#,
         );
 
@@ -735,9 +792,9 @@ fn list_issues_aggregates_devcontainer_states() {
     assert_eq!(
         out.stdout_json(),
         json!([
-            { "id": "main", "title": "main", "active": false, "closed": false, "devcontainer": "none" },
-            { "id": "42", "title": "Fix bug", "active": false, "closed": false, "devcontainer": "stopped" },
-            { "id": "43", "title": "Add feature", "active": false, "closed": false, "devcontainer": "running" },
+            { "id": "main", "title": "main", "active": false, "closed": false, "devcontainer": "none", "has_children": false },
+            { "id": "42", "title": "Fix bug", "active": false, "closed": false, "devcontainer": "stopped", "has_children": false },
+            { "id": "43", "title": "Add feature", "active": false, "closed": false, "devcontainer": "running", "has_children": false },
         ])
     );
 }
@@ -747,7 +804,7 @@ fn list_issues_preserves_backslash_sequences_in_titles() {
     // Arrange: タイトルに literal な \t (バックスラッシュ + t) を含む Issue
     let env = TestEnv::new();
     env.stub("^docker ps -a", "").stub(
-        "^tracker list-issues-v0 --repo owner/repo$",
+        "^tracker list-issues-v1 --repo owner/repo$",
         r#"[{"id":"42","title":"Keep \\t literal"}]"#,
     );
 
@@ -758,7 +815,7 @@ fn list_issues_preserves_backslash_sequences_in_titles() {
     assert_eq!(out.status, Some(0));
     assert_eq!(
         out.stdout_json()[1],
-        json!({ "id": "42", "title": "Keep \\t literal", "active": false, "closed": false, "devcontainer": "none" })
+        json!({ "id": "42", "title": "Keep \\t literal", "active": false, "closed": false, "devcontainer": "none", "has_children": false })
     );
 }
 
@@ -1369,8 +1426,8 @@ fn list_issues_marks_herdr_workspace_as_active() {
     assert_eq!(
         out.stdout_json(),
         json!([
-            { "id": "main", "title": "main", "active": true, "closed": false, "devcontainer": "none" },
-            { "id": "42", "title": "Fix bug", "active": true, "closed": false, "devcontainer": "none" },
+            { "id": "main", "title": "main", "active": true, "closed": false, "devcontainer": "none", "has_children": false },
+            { "id": "42", "title": "Fix bug", "active": true, "closed": false, "devcontainer": "none", "has_children": false },
         ])
     );
 }
@@ -1713,7 +1770,7 @@ fn list_issues_degrades_to_main_when_tracker_fails() {
     assert_eq!(
         out.stdout_json(),
         json!([
-            { "id": "main", "title": "main", "active": false, "closed": false, "devcontainer": "none" },
+            { "id": "main", "title": "main", "active": false, "closed": false, "devcontainer": "none", "has_children": false },
         ])
     );
     assert_eq!(out.stderr, "");

@@ -31,7 +31,9 @@ fn run(args: &[String]) -> CmdResult {
     match subcmd.as_str() {
         "list-repo-groups" => usecases::list_repo_groups(&home),
         "list-repos" => usecases::list_repos(&home, flag_value(rest, "--group")),
-        "list-issues" => usecases::list_issues(&home, &required_repo(rest)?),
+        "list-issues" => {
+            usecases::list_issues(&home, &required_repo(rest)?, optional_parent(rest)?)
+        }
         "list-workspaces" => usecases::list_workspaces(&home),
         "list-session-managers" => usecases::list_session_managers(&home),
         "list-trackers" => usecases::list_trackers(&home),
@@ -84,4 +86,14 @@ fn required_issue(args: &[String]) -> Result<WorkspaceId, String> {
     domain::is_valid_issue(&value)
         .then(|| WorkspaceId::parse(&value))
         .ok_or_else(|| format!("Invalid issue: {value}"))
+}
+
+/// --parent (任意) の検証。Issue id の文法に加え、Workspace id 空間の
+/// 番兵値 `main` は親になれない。
+fn optional_parent(args: &[String]) -> Result<Option<String>, String> {
+    match flag_value(args, "--parent") {
+        None => Ok(None),
+        Some(value) if value != "main" && domain::is_valid_issue(&value) => Ok(Some(value)),
+        Some(value) => Err(format!("Invalid parent: {value}")),
+    }
 }

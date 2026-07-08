@@ -45,22 +45,40 @@ pub fn repo_group_repos(bin: &Path, group: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// open な Issue の (id, タイトル) の列。取得できなければ空。
+/// open な Issue。1 要素は (id, タイトル, 子 Issue の有無)。取得できなければ空。
 /// 並びはプラグインの返した順 (UI の表示順)。
-pub fn open_issues(bin: &Path, repo: &RepoRef) -> Vec<(String, String)> {
-    call(bin, &["list-issues-v0", "--repo", &repo.ns_repo()])
+///
+/// まず階層対応の list-issues-v1 を試し、非対応のプラグイン (未知の動詞 →
+/// 非ゼロ) には list-issues-v0 に落ちて has_children を false で補う。
+/// v0 は階層を表現できないため、`--parent` 指定時のフォールバックは空。
+pub fn open_issues(bin: &Path, repo: &RepoRef, parent: Option<&str>) -> Vec<(String, String, bool)> {
+    let ns_repo = repo.ns_repo();
+    let mut args = vec!["list-issues-v1", "--repo", ns_repo.as_str()];
+    if let Some(parent) = parent {
+        args.extend(["--parent", parent]);
+    }
+    if let Some(items) = call(bin, &args).and_then(|v| v.as_array().cloned()) {
+        return issue_items(&items, true);
+    }
+    if parent.is_some() {
+        return Vec::new();
+    }
+    call(bin, &["list-issues-v0", "--repo", &ns_repo])
         .and_then(|v| v.as_array().cloned())
-        .map(|items| {
-            items
-                .iter()
-                .filter_map(|item| {
-                    let id = item["id"].as_str()?;
-                    let title = item["title"].as_str()?;
-                    valid_issue_id(id).then(|| (id.to_owned(), title.to_owned()))
-                })
-                .collect()
-        })
+        .map(|items| issue_items(&items, false))
         .unwrap_or_default()
+}
+
+fn issue_items(items: &[Value], hierarchical: bool) -> Vec<(String, String, bool)> {
+    items
+        .iter()
+        .filter_map(|item| {
+            let id = item["id"].as_str()?;
+            let title = item["title"].as_str()?;
+            let has_children = hierarchical && item["has_children"].as_bool().unwrap_or(false);
+            valid_issue_id(id).then(|| (id.to_owned(), title.to_owned(), has_children))
+        })
+        .collect()
 }
 
 /// 単一 Issue の (タイトル, closed か)。取得できなければ None。

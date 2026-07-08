@@ -140,47 +140,57 @@ pub fn list_workspaces(home: &Path) -> CmdResult {
     Ok(Value::Array(rows))
 }
 
-pub fn list_issues(home: &Path, repo: &RepoRef) -> CmdResult {
+pub fn list_issues(home: &Path, repo: &RepoRef, parent: Option<String>) -> CmdResult {
     let entry = repostore::lookup(home, repo)?;
     let paths = paths(home);
     let managers = settings::session_managers(home);
     let plugin = settings::trackers(home)?.plugin_for(entry.tracker.as_deref())?.map(Path::to_owned);
-    let main_entry = issue_entry(
-        "main",
-        "main",
-        session::workspace_session_exists(repo, &WorkspaceId::Main, &managers),
-        false,
-        devcontainer::state(repo, "main"),
-    );
 
     let active_ids = active_issue_ids(&paths, &entry, &managers);
     let open_issues = plugin
         .as_deref()
-        .map(|bin| tracker::open_issues(bin, repo))
+        .map(|bin| tracker::open_issues(bin, repo, parent.as_deref()))
         .unwrap_or_default();
-    let open_ids: HashSet<&str> = open_issues.iter().map(|(id, _)| id.as_str()).collect();
 
-    let issue_entries = open_issues.iter().map(|(id, title)| {
+    let issue_entries = open_issues.iter().map(|(id, title, has_children)| {
         issue_entry(
             id,
             title,
             active_ids.iter().any(|active| active == id),
             false,
             devcontainer::state(repo, id),
+            *has_children,
         )
     });
 
-    // 孤児 worktree: Tracker 上は open でないがセッションが残っている Issue
+    // 子 Issue の一覧 (--parent): 階層のドリルダウン用のビューで、
+    // main と孤児 worktree はトップレベルにしか出さない
+    if parent.is_some() {
+        return Ok(Value::Array(issue_entries.collect()));
+    }
+
+    let main_entry = issue_entry(
+        "main",
+        "main",
+        session::workspace_session_exists(repo, &WorkspaceId::Main, &managers),
+        false,
+        devcontainer::state(repo, "main"),
+        false,
+    );
+
+    // 孤児 worktree: トップレベルの open 一覧に出てこないがセッションが
+    // 残っている Issue。closed とは限らない (open な子 Issue もここに来る)
+    // ため、closed は Tracker の実際の state で埋める
+    let open_ids: HashSet<&str> = open_issues.iter().map(|(id, _, _)| id.as_str()).collect();
     let orphan_entries = active_ids
         .iter()
         .filter(|id| !open_ids.contains(id.as_str()))
         .map(|id| {
-            let title = plugin
+            let (title, closed) = plugin
                 .as_deref()
                 .and_then(|bin| tracker::issue(bin, repo, id))
-                .map(|(title, _)| title)
-                .unwrap_or_else(|| "unknown".to_owned());
-            issue_entry(id, &title, true, true, devcontainer::state(repo, id))
+                .unwrap_or_else(|| ("unknown".to_owned(), true));
+            issue_entry(id, &title, true, closed, devcontainer::state(repo, id), false)
         });
 
     Ok(Value::Array(
@@ -325,8 +335,18 @@ fn active_count(paths: &domain::Paths, entry: &RepoEntry, managers: &settings::M
         + usize::from(session::workspace_session_exists(&entry.repo, &WorkspaceId::Main, managers))
 }
 
-fn issue_entry(id: &str, title: &str, active: bool, closed: bool, dc: &str) -> Value {
-    json!({ "id": id, "title": title, "active": active, "closed": closed, "devcontainer": dc })
+fn issue_entry(
+    id: &str,
+    title: &str,
+    active: bool,
+    closed: bool,
+    dc: &str,
+    has_children: bool,
+) -> Value {
+    json!({
+        "id": id, "title": title, "active": active, "closed": closed,
+        "devcontainer": dc, "has_children": has_children,
+    })
 }
 
 fn validated(name: &str, value: String, valid: fn(&str) -> bool) -> Result<String, String> {

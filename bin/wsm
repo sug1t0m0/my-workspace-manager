@@ -217,37 +217,74 @@ _pick_repo() {
   fi
 }
 
-# Step 3: Issue / ワークスペース選択
+# Step 3: Issue / ワークスペース選択 (階層対応)
+# has_children (▸) の Issue を選ぶと子 Issue の一覧に降りる。子の階層には
+# 「(この Issue を開く)」と「.. 戻る」の項目を出す。階層は選択 UX だけの
+# 概念で、選ばれた Issue id の扱い (worktree・セッション) は平坦なまま。
 _pick_issue() {
   local ns_repo=$1
   local TAB=$'\t'
+  local -a parents=()  # ドリルダウンの親スタック
 
-  local json=$(_server list-issues --repo "$ns_repo")
-  local items=()
+  while true; do
+    local -a query=(list-issues --repo "$ns_repo")
+    local header="$ns_repo"
+    if (( ${#parents[@]} > 0 )); then
+      query+=(--parent "${parents[-1]}")
+      header+="  #${(j: > #:)parents}"
+    fi
 
-  while IFS=$'\t' read -r id title active closed dc; do
-    local display=""
-    if [[ "$id" == "main" ]]; then
-      display="main  (ディスカッション・調査用)"
-    else
-      display="#${id}  ${title}"
+    local json=$(_server "${query[@]}")
+    local items=()
+    if (( ${#parents[@]} > 0 )); then
+      items+=("__self__${TAB}(この Issue #${parents[-1]} を開く)")
+      items+=("__up__${TAB}..")
     fi
-    if [[ "$closed" == "true" ]]; then
-      display+="  ✔ closed"
-    fi
-    if [[ "$active" == "true" ]]; then
-      display+="  ● active"
-    fi
-    local dc_disp=$(_dc_indicator "$dc")
-    [[ -n "$dc_disp" ]] && display+="  ${dc_disp}"
-    items+=("${id}${TAB}${display}")
-  done < <(printf '%s\n' "$json" | jq -r '.[] | "\(.id)\t\(.title)\t\(.active)\t\(.closed)\t\(.devcontainer // "none")"')
+    while IFS=$'\t' read -r id title active closed dc children; do
+      [[ -n "$id" ]] || continue
+      local display=""
+      if [[ "$id" == "main" ]]; then
+        display="main  (ディスカッション・調査用)"
+      else
+        display="#${id}  ${title}"
+      fi
+      [[ "$children" == "true" ]] && display+="  ▸"
+      if [[ "$closed" == "true" ]]; then
+        display+="  ✔ closed"
+      fi
+      if [[ "$active" == "true" ]]; then
+        display+="  ● active"
+      fi
+      local dc_disp=$(_dc_indicator "$dc")
+      [[ -n "$dc_disp" ]] && display+="  ${dc_disp}"
+      items+=("${id}${TAB}${display}${TAB}${children}")
+    done < <(printf '%s\n' "$json" \
+      | jq -r '.[] | "\(.id)\t\(.title)\t\(.active)\t\(.closed)\t\(.devcontainer // "none")\t\(.has_children // false)"')
 
-  local selected=$(printf '%s\n' "${items[@]}" \
-    | fzf --with-nth=2.. --delimiter=$'\t' --height=40% --reverse --prompt="Issue> " --header="${ns_repo}")
-  if [[ -n "$selected" ]]; then
-    printf '%s\n' "$selected" | cut -f1
-  fi
+    local selected=$(printf '%s\n' "${items[@]}" \
+      | fzf --with-nth=2 --delimiter=$'\t' --height=40% --reverse --prompt="Issue> " --header="$header")
+    [[ -z "$selected" ]] && return 0
+
+    local sel_id=$(printf '%s\n' "$selected" | cut -f1)
+    local sel_children=$(printf '%s\n' "$selected" | cut -f3)
+    case "$sel_id" in
+      __self__)
+        printf '%s\n' "${parents[-1]}"
+        return 0
+        ;;
+      __up__)
+        parents=("${parents[@]:0:${#parents[@]}-1}")
+        ;;
+      *)
+        if [[ "$sel_children" == "true" ]]; then
+          parents+=("$sel_id")
+        else
+          printf '%s\n' "$sel_id"
+          return 0
+        fi
+        ;;
+    esac
+  done
 }
 
 # Multi-select fzf picker for devcontainer configs.
