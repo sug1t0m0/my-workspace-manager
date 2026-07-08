@@ -1,92 +1,81 @@
-//! Tracker ロールの GitHub 実装 (gh CLI)。読み取り専用。
-//! gh との会話 (引数列) は契約の一部。契約テストのフェイクが
-//! この会話を前提にしているため、変更はテストの変更を伴う。
+//! Tracker ロール: プロジェクト・Issue 照会のプラグインディスパッチ。読み取り専用。
+//!
+//! プラグインは v0 動詞を受けて JSON 1 ドキュメントを stdout に返す実行
+//! ファイル (docs/wsm.md「Tracker プラグイン契約」)。どのプラグインを使うかは
+//! 設定 ([[tracker]] / default_tracker / [[repo]].tracker) が決め、解決は
+//! 呼び出し側 (usecases) が行う。
+//!
+//! プラグインの出力は信頼しない入力として扱う: id はブランチ名・セッション名・
+//! Docker ラベルに流れ込むため形を検証し、違反する要素は捨てる。
 
-use wsm_shared::domains::RepoRef;
 use crate::infra::exec;
 use serde_json::Value;
+use std::path::Path;
+use wsm_shared::domains::{self as domain, RepoRef};
 
-const OPEN_PROJECTS_FILTER: &str = ".projects[] | select(.closed == false) | {number, title}";
-const ISSUE_LINES_FILTER: &str = r#".[] | "\(.number)\t\(.title)""#;
-
-/// gh の認証ユーザーを解決する (--user 省略時の自己解決)。
-pub fn resolve_user() -> Option<String> {
-    exec::stdout_if_ok("gh", &["api", "user", "-q", ".login"])
-        .map(|s| s.trim().to_owned())
-        .filter(|s| !s.is_empty())
+fn call(bin: &Path, args: &[&str]) -> Option<Value> {
+    exec::stdout_if_ok(bin, args).and_then(|out| serde_json::from_str(&out).ok())
 }
 
-/// open な Project の一覧 ({number, title} の列)。取得できなければ空。
-pub fn open_projects(user: &str) -> Vec<Value> {
-    exec::stdout_if_ok(
-        "gh",
-        &["project", "list", "--owner", user, "--format", "json", "-q", OPEN_PROJECTS_FILTER],
-    )
-    .map(|out| out.lines().filter_map(|line| serde_json::from_str(line).ok()).collect())
-    .unwrap_or_default()
+/// open なプロジェクトの {id, title} の列。取得できなければ空。
+pub fn open_projects(bin: &Path) -> Vec<Value> {
+    call(bin, &["list-projects-v0"])
+        .and_then(|v| v.as_array().cloned())
+        .map(|items| items.into_iter().filter(valid_project).collect())
+        .unwrap_or_default()
 }
 
-/// open な Issue の (番号, タイトル) の列。取得できなければ空。
-pub fn open_issues(repo: &RepoRef) -> Vec<(String, String)> {
-    let ns_repo = repo.ns_repo();
-    exec::stdout_if_ok(
-        "gh",
-        &["issue", "list", "--repo", &ns_repo, "--limit", "50", "--json", "number,title", "-q", ISSUE_LINES_FILTER],
-    )
-    .map(|out| {
-        out.lines()
-            .filter_map(|line| line.split_once('\t'))
-            .map(|(number, title)| (number.to_owned(), title.to_owned()))
-            .collect()
-    })
-    .unwrap_or_default()
+fn valid_project(item: &Value) -> bool {
+    item["id"].as_str().is_some_and(domain::is_valid_project) && item["title"].is_string()
 }
 
-/// Project に属するリポジトリの ns_repo 一覧。取得できなければ空。
-/// GraphQL クエリも会話の一部 (契約テストのフェイクが前提にする)。
-/// repositoryOwner はユーザー・organization の両方を解決できる。
-pub fn project_repos(user: &str, project: &str) -> Vec<String> {
-    const QUERY: &str = "\n      query($owner: String!, $num: Int!) {\n        repositoryOwner(login: $owner) {\n          ... on User {\n            projectV2(number: $num) {\n              repositories(first: 100) {\n                nodes { nameWithOwner }\n              }\n            }\n          }\n          ... on Organization {\n            projectV2(number: $num) {\n              repositories(first: 100) {\n                nodes { nameWithOwner }\n              }\n            }\n          }\n        }\n      }";
-    exec::stdout_if_ok(
-        "gh",
-        &[
-            "api",
-            "graphql",
-            "-f",
-            &format!("query={QUERY}"),
-            "-f",
-            &format!("owner={user}"),
-            "-F",
-            &format!("num={project}"),
-            "-q",
-            ".data.repositoryOwner.projectV2.repositories.nodes[].nameWithOwner",
-        ],
-    )
-    .map(|out| out.lines().filter(|l| !l.is_empty()).map(str::to_owned).collect())
-    .unwrap_or_default()
+/// プロジェクトに属するリポジトリの ns_repo 一覧。取得できなければ空。
+pub fn project_repos(bin: &Path, project: &str) -> Vec<String> {
+    call(bin, &["project-repos-v0", "--project", project])
+        .and_then(|v| v.as_array().cloned())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|v| v.as_str())
+                .filter(|s| RepoRef::parse(s).is_some())
+                .map(str::to_owned)
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
-/// 単一 Issue のタイトルと状態 (list-workspaces 用)。
-pub fn issue_title_and_state(repo: &RepoRef, issue: &str) -> Option<(String, String)> {
-    let ns_repo = repo.ns_repo();
-    exec::stdout_if_ok(
-        "gh",
-        &["issue", "view", issue, "--repo", &ns_repo, "--json", "title,state", "-q", r#""\(.title)\t\(.state)""#],
-    )
-    .and_then(|out| {
-        out.trim_end_matches('\n')
-            .split_once('\t')
-            .map(|(title, state)| (title.to_owned(), state.to_owned()))
-    })
+/// open な Issue の (id, タイトル) の列。取得できなければ空。
+/// 並びはプラグインの返した順 (UI の表示順)。
+pub fn open_issues(bin: &Path, repo: &RepoRef) -> Vec<(String, String)> {
+    call(bin, &["list-issues-v0", "--repo", &repo.ns_repo()])
+        .and_then(|v| v.as_array().cloned())
+        .map(|items| {
+            items
+                .iter()
+                .filter_map(|item| {
+                    let id = item["id"].as_str()?;
+                    let title = item["title"].as_str()?;
+                    valid_issue_id(id).then(|| (id.to_owned(), title.to_owned()))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
-/// 単一 Issue のタイトル (孤児 worktree の解決用)。
-pub fn issue_title(repo: &RepoRef, issue: &str) -> Option<String> {
-    let ns_repo = repo.ns_repo();
-    exec::stdout_if_ok(
-        "gh",
-        &["issue", "view", issue, "--repo", &ns_repo, "--json", "title", "-q", ".title"],
-    )
-    .map(|s| s.trim_end_matches('\n').to_owned())
-    .filter(|s| !s.is_empty())
+/// 単一 Issue の (タイトル, closed か)。取得できなければ None。
+pub fn issue(bin: &Path, repo: &RepoRef, id: &str) -> Option<(String, bool)> {
+    let v = call(bin, &["issue-v0", "--repo", &repo.ns_repo(), "--id", id])?;
+    let title = v["title"].as_str()?.to_owned();
+    let closed = match v["state"].as_str()? {
+        "closed" => true,
+        "open" => false,
+        _ => return None,
+    };
+    Some((title, closed))
+}
+
+/// プラグインが返す Issue id の検証。id の文法に加え、Workspace id 空間の
+/// 番兵値 `main` と衝突するものも捨てる。
+fn valid_issue_id(id: &str) -> bool {
+    id != "main" && domain::is_valid_issue(id)
 }

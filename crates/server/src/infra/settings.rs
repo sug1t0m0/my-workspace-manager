@@ -137,77 +137,133 @@ pub fn default_devcontainer_config(home: &Path) -> Option<PathBuf> {
 /// host = "gitlab.example.com"  # worktree パス導出に使う host (必須)
 /// ns   = "myteam"              # 識別子の namespace (必須)
 /// name = "aaa"                 # 識別子のリポジトリ名 (省略時 path の basename)
+/// tracker = "jira-team"        # 使うトラッカー名 (省略時 default_tracker)
 /// ```
 pub fn custom_repos(home: &Path) -> Result<Vec<RepoEntry>, String> {
     let content = std::fs::read_to_string(config_file(home)).unwrap_or_default();
-    let mut entries = Vec::new();
-    let mut current: Option<RepoTable> = None;
+    table_sections(&content, "repo", &["path", "host", "ns", "name", "tracker"])
+        .iter()
+        .map(|section| repo_entry(home, section))
+        .collect()
+}
 
+/// 必須キーの検証と RepoEntry への変換。設定の誤りは黙って捨てず
+/// error JSON として表面化させる (フォールバックなしの方針)。
+fn repo_entry(home: &Path, section: &[(String, String)]) -> Result<RepoEntry, String> {
+    let path = table_value(section, "path").ok_or("[[repo]] requires path in config.toml")?;
+    let host = table_value(section, "host").ok_or("[[repo]] requires host in config.toml")?;
+    let ns = table_value(section, "ns").ok_or("[[repo]] requires ns in config.toml")?;
+    let clone_path = expand_tilde(home, path);
+    let name = match table_value(section, "name") {
+        Some(name) => name,
+        None => clone_path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .ok_or("[[repo]] path has no basename for name")?,
+    };
+    if !domain::is_valid_host(&host) {
+        return Err(format!("Invalid repo host: {host}"));
+    }
+    let repo = RepoRef::parse(&format!("{ns}/{name}"))
+        .ok_or_else(|| format!("Invalid repo entry: {ns}/{name}"))?;
+    let tracker = table_value(section, "tracker");
+    if let Some(tracker) = &tracker {
+        if !domain::is_valid_user(tracker) {
+            return Err(format!("Invalid tracker name: {tracker}"));
+        }
+    }
+    Ok(RepoEntry { repo, host, clone_path, tracker })
+}
+
+/// 設定された Tracker プラグインの列 (`[[tracker]]` テーブル)。
+/// マネージャーと同じ規則: 列挙したものだけが存在し、フォールバックはない。
+/// 既定は `default_tracker` で明示し、未指定なら列挙の先頭。
+pub struct Trackers {
+    entries: Vec<(String, PathBuf)>,
+    default: Option<String>,
+}
+
+impl Trackers {
+    /// 既定トラッカーのプラグイン (プロジェクト照会などリポジトリ非依存の
+    /// 呼び出しに使う)。未設定は設定誤りとして表面化させる。
+    pub fn default_plugin(&self) -> Result<&Path, String> {
+        self.plugin_of(self.default.as_deref().or(self.entries.first().map(|(n, _)| n.as_str()))
+            .ok_or("no tracker configured (add [[tracker]] to config.toml)")?)
+    }
+
+    /// リポジトリの選択 (RepoEntry.tracker) からプラグインを解決する。
+    /// 名前指定が列挙にないのは設定誤りでエラー。無指定はトラッカーが
+    /// 全く設定されていなければ None (照会は縮退する)。
+    pub fn plugin_for(&self, tracker: Option<&str>) -> Result<Option<&Path>, String> {
+        match tracker {
+            Some(name) => self.plugin_of(name).map(Some),
+            None if self.entries.is_empty() => Ok(None),
+            None => self.default_plugin().map(Some),
+        }
+    }
+
+    fn plugin_of(&self, name: &str) -> Result<&Path, String> {
+        self.entries
+            .iter()
+            .find(|(n, _)| n == name)
+            .map(|(_, path)| path.as_path())
+            .ok_or_else(|| format!("tracker not configured: {name}"))
+    }
+}
+
+/// config.toml から [[tracker]] と default_tracker を読む。
+pub fn trackers(home: &Path) -> Result<Trackers, String> {
+    let content = std::fs::read_to_string(config_file(home)).unwrap_or_default();
+    let entries = table_sections(&content, "tracker", &["name", "path"])
+        .iter()
+        .map(|section| {
+            let name =
+                table_value(section, "name").ok_or("[[tracker]] requires name in config.toml")?;
+            let path =
+                table_value(section, "path").ok_or("[[tracker]] requires path in config.toml")?;
+            if !domain::is_valid_user(&name) {
+                return Err(format!("Invalid tracker name: {name}"));
+            }
+            Ok((name, expand_tilde(home, path)))
+        })
+        .collect::<Result<Vec<_>, String>>()?;
+    let default = config_value(home, "default_tracker");
+    if let Some(name) = &default {
+        if !entries.iter().any(|(n, _)| n == name) {
+            return Err(format!("tracker not configured: {name}"));
+        }
+    }
+    Ok(Trackers { entries, default })
+}
+
+/// `[[<header>]]` テーブルの列を、テーブルごとの (key, value) の対に読む。
+/// 対象キーのみ拾い、別のセクションヘッダでテーブルは終わる。
+fn table_sections(content: &str, header: &str, keys: &[&str]) -> Vec<Vec<(String, String)>> {
+    let marker = format!("[[{header}]]");
+    let mut sections: Vec<Vec<(String, String)>> = Vec::new();
+    let mut current: Option<Vec<(String, String)>> = None;
     for line in content.lines() {
         let trimmed = line.trim();
-        if trimmed == "[[repo]]" {
-            if let Some(table) = current.take() {
-                entries.push(table.finish(home)?);
-            }
-            current = Some(RepoTable::default());
+        if trimmed == marker {
+            sections.extend(current.take());
+            current = Some(Vec::new());
         } else if trimmed.starts_with('[') {
-            // 別のセクションの開始で [[repo]] テーブルは終わる
-            if let Some(table) = current.take() {
-                entries.push(table.finish(home)?);
-            }
-        } else if let Some(table) = current.as_mut() {
-            table.read_line(trimmed);
-        }
-    }
-    if let Some(table) = current.take() {
-        entries.push(table.finish(home)?);
-    }
-    Ok(entries)
-}
-
-#[derive(Default)]
-struct RepoTable {
-    path: Option<String>,
-    host: Option<String>,
-    ns: Option<String>,
-    name: Option<String>,
-}
-
-impl RepoTable {
-    fn read_line(&mut self, line: &str) {
-        for (key, slot) in [
-            ("path", &mut self.path),
-            ("host", &mut self.host),
-            ("ns", &mut self.ns),
-            ("name", &mut self.name),
-        ] {
-            if let Some(value) = parse_config_line(line, key) {
-                *slot = Some(value);
+            sections.extend(current.take());
+        } else if let Some(section) = current.as_mut() {
+            for key in keys {
+                if let Some(value) = parse_config_line(trimmed, key) {
+                    section.push(((*key).to_owned(), value));
+                }
             }
         }
     }
+    sections.extend(current.take());
+    sections
+}
 
-    /// 必須キーの検証と RepoEntry への変換。設定の誤りは黙って捨てず
-    /// error JSON として表面化させる (フォールバックなしの方針)。
-    fn finish(self, home: &Path) -> Result<RepoEntry, String> {
-        let path = self.path.ok_or("[[repo]] requires path in config.toml")?;
-        let host = self.host.ok_or("[[repo]] requires host in config.toml")?;
-        let ns = self.ns.ok_or("[[repo]] requires ns in config.toml")?;
-        let clone_path = expand_tilde(home, path);
-        let name = match self.name {
-            Some(name) => name,
-            None => clone_path
-                .file_name()
-                .map(|n| n.to_string_lossy().into_owned())
-                .ok_or("[[repo]] path has no basename for name")?,
-        };
-        if !domain::is_valid_host(&host) {
-            return Err(format!("Invalid repo host: {host}"));
-        }
-        let repo = RepoRef::parse(&format!("{ns}/{name}"))
-            .ok_or_else(|| format!("Invalid repo entry: {ns}/{name}"))?;
-        Ok(RepoEntry { repo, host, clone_path })
-    }
+/// テーブル内のキーの値 (同名キーの重複は後勝ち)。
+fn table_value(section: &[(String, String)], key: &str) -> Option<String> {
+    section.iter().rev().find(|(k, _)| k == key).map(|(_, v)| v.clone())
 }
 
 fn env_override(name: &str) -> Option<String> {

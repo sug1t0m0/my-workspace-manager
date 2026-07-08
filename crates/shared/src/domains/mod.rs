@@ -78,13 +78,15 @@ pub struct Paths {
 }
 
 /// リポジトリの所在。識別子 (RepoRef) に、RepoStore が解決したメタ情報
-/// (host とクローン本体のパス) を添えたもの。識別子はあくまで `<ns>/<repo>`
-/// で、host は worktree のパス導出と表示にだけ使う。
+/// (host とクローン本体のパス、使う Tracker) を添えたもの。識別子はあくまで
+/// `<ns>/<repo>` で、host は worktree のパス導出と表示にだけ使う。
+/// tracker は設定 `[[repo]]` で選んだトラッカー名 (None なら既定)。
 #[derive(Clone)]
 pub struct RepoEntry {
     pub repo: RepoRef,
     pub host: String,
     pub clone_path: PathBuf,
+    pub tracker: Option<String>,
 }
 
 /// Workspace のパス。main はクローン本体、Issue は
@@ -151,9 +153,11 @@ pub fn is_valid_user(value: &str) -> bool {
         && chars.all(|c| c.is_ascii_alphanumeric() || c == '-')
 }
 
-/// project: 数字のみ (`none` は list-repos が検証の前に処理する)。
+/// project: issue と同じ不透明な id の文法 (英数と `-`、先頭は英数)。
+/// トラッカーが発行する id (GitHub Projects の番号、Jira のキー等) を許容する。
+/// `none` は list-repos が検証の前に処理する。
 pub fn is_valid_project(value: &str) -> bool {
-    !value.is_empty() && value.chars().all(|c| c.is_ascii_digit())
+    is_valid_issue(value)
 }
 
 /// host: 英数と `.` `-` (先頭は英数)。`/` を許さないこと・先頭が英数である

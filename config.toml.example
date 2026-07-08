@@ -12,6 +12,15 @@ tmux_path = "/opt/homebrew/bin/tmux"
 # 既定のセッションマネージャー (未指定なら列挙の先頭)
 default_session_manager = "herdr"
 
+# Tracker プラグインの列挙 (docs/wsm.md「Tracker プラグイン契約」)。
+# 列挙したものだけが存在する (フォールバックはない)。
+[[tracker]]
+name = "github"
+path = "~/.local/bin/wsm-tracker-github"
+
+# 既定のトラッカー (未指定なら列挙の先頭)
+# default_tracker = "github"
+
 # フォールバック devcontainer 設定 (リポジトリに devcontainer.json がないときの既定)
 default_devcontainer_config = "/path/to/your/default/.devcontainer/devcontainer.json"
 
@@ -29,3 +38,4 @@ default_devcontainer_config = "/path/to/your/default/.devcontainer/devcontainer.
 # host = "gitlab.example.com"  # worktree パス導出に使う host (必須)
 # ns   = "myteam"              # 識別子の namespace (必須)
 # name = "aaa"                 # 識別子のリポジトリ名 (省略時 path の basename)
+# tracker = "github"           # 使うトラッカー名 (省略時 default_tracker)

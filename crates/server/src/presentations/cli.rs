@@ -29,10 +29,8 @@ fn run(args: &[String]) -> CmdResult {
     let home = std::env::var("HOME").map(PathBuf::from).map_err(|_| "HOME is not set")?;
     let (subcmd, rest) = args.split_first().ok_or(USAGE)?;
     match subcmd.as_str() {
-        "list-projects" => usecases::list_projects(flag_value(rest, "--user")),
-        "list-repos" => {
-            usecases::list_repos(&home, flag_value(rest, "--project"), flag_value(rest, "--user"))
-        }
+        "list-projects" => usecases::list_projects(&home),
+        "list-repos" => usecases::list_repos(&home, flag_value(rest, "--project")),
         "list-issues" => usecases::list_issues(&home, &required_repo(rest)?),
         "list-workspaces" => usecases::list_workspaces(&home),
         "list-session-managers" => usecases::list_session_managers(&home),

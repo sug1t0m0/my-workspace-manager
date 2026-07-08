@@ -3,8 +3,9 @@
 # (docs/wsm.md の「dotfiles との境界」)。
 #
 # 成果物:
-#   wsm-server-aarch64-apple-darwin  … サーバー (Rust, macOS arm64 ホスト用)
-#   wsm                              … クライアント (zsh。ホスト・DevContainer 共通)
+#   wsm-server-aarch64-apple-darwin          … サーバー (Rust, macOS arm64 ホスト用)
+#   wsm-tracker-github-aarch64-apple-darwin  … 公式 GitHub Tracker プラグイン (ホスト用)
+#   wsm                                      … クライアント (zsh。ホスト・DevContainer 共通)
 # 将来 Rust クライアントを配るときは wsm-client-<target> をここに追加する。
 name: release
 
@@ -29,6 +30,7 @@ jobs:
         run: |
           mkdir -p dist
           cp target/release/wsm-server dist/wsm-server-aarch64-apple-darwin
+          cp target/release/wsm-tracker-github dist/wsm-tracker-github-aarch64-apple-darwin
           cp bin/wsm dist/wsm
       - name: Create GitHub release
         env:

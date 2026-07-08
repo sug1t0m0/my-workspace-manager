@@ -18,10 +18,11 @@ fn paths(home: &Path) -> domain::Paths {
     domain::Paths { home: home.to_owned(), worktree_root: settings::worktree_root(home) }
 }
 
-/// user は未指定なら Tracker で自己解決する (解決した値も検証する)。
-pub fn list_projects(user: Option<String>) -> CmdResult {
-    let user = resolved_user(user)?;
-    Ok(Value::Array(tracker::open_projects(&user)))
+/// open なプロジェクトの一覧 (既定トラッカー)。トラッカー未設定は
+/// 対話フローの入り口で設定誤りを表面化させるため、縮退せずエラーにする。
+pub fn list_projects(home: &Path) -> CmdResult {
+    let trackers = settings::trackers(home)?;
+    Ok(Value::Array(tracker::open_projects(trackers.default_plugin()?)))
 }
 
 pub fn list_session_managers(home: &Path) -> CmdResult {
@@ -36,7 +37,7 @@ pub fn list_session_managers(home: &Path) -> CmdResult {
     ))
 }
 
-pub fn list_repos(home: &Path, project: Option<String>, user: Option<String>) -> CmdResult {
+pub fn list_repos(home: &Path, project: Option<String>) -> CmdResult {
     let project = project.unwrap_or_default();
 
     let repos: Vec<RepoEntry> = if project.is_empty() || project == "none" {
@@ -45,10 +46,10 @@ pub fn list_repos(home: &Path, project: Option<String>, user: Option<String>) ->
         entries
     } else {
         // Tracker (Project 所属) と RepoStore (ローカルにある) の交差
-        let user = resolved_user(user)?;
         let project = validated("project", project, domain::is_valid_project)?;
+        let plugin = settings::trackers(home)?.default_plugin()?.to_owned();
         let entries = repostore::entries(home)?;
-        tracker::project_repos(&user, &project)
+        tracker::project_repos(&plugin, &project)
             .iter()
             .filter_map(|name| RepoRef::parse(name))
             .filter_map(|repo| entries.iter().find(|entry| entry.repo == repo))
@@ -71,12 +72,13 @@ pub fn list_repos(home: &Path, project: Option<String>, user: Option<String>) ->
 pub fn list_workspaces(home: &Path) -> CmdResult {
     let paths = paths(home);
     let managers = settings::session_managers(home);
-    let rows = repostore::entries(home)?
-        .into_iter()
-        .flat_map(|entry| {
-            let repo = &entry.repo;
-            let main_entry = session::workspace_session_exists(repo, &WorkspaceId::Main, &managers)
-                .then(|| {
+    let trackers = settings::trackers(home)?;
+    let mut rows = Vec::new();
+    for entry in repostore::entries(home)? {
+        let repo = &entry.repo;
+        let plugin = trackers.plugin_for(entry.tracker.as_deref())?;
+        let main_entry = session::workspace_session_exists(repo, &WorkspaceId::Main, &managers)
+            .then(|| {
                 json!({
                     "ns_repo": repo.ns_repo(), "id": "main", "title": "main",
                     "active": true, "closed": false,
@@ -84,28 +86,27 @@ pub fn list_workspaces(home: &Path) -> CmdResult {
                 })
             });
 
-            let worktree_entries: Vec<Value> = active_issue_ids(&paths, &entry, &managers)
-                .into_iter()
-                .map(|id| {
-                    let active = session::workspace_session_exists(
-                        repo,
-                        &WorkspaceId::Issue(id.clone()),
-                        &managers,
-                    );
-                    let (title, closed) = tracker::issue_title_and_state(repo, &id)
-                        .map(|(title, state)| (title, state == "CLOSED"))
-                        .unwrap_or_else(|| ("unknown".to_owned(), false));
-                    json!({
-                        "ns_repo": repo.ns_repo(), "id": id, "title": title,
-                        "active": active, "closed": closed,
-                        "devcontainer": devcontainer::state(repo, &id),
-                    })
+        let worktree_entries: Vec<Value> = active_issue_ids(&paths, &entry, &managers)
+            .into_iter()
+            .map(|id| {
+                let active = session::workspace_session_exists(
+                    repo,
+                    &WorkspaceId::Issue(id.clone()),
+                    &managers,
+                );
+                let (title, closed) = plugin
+                    .and_then(|bin| tracker::issue(bin, repo, &id))
+                    .unwrap_or_else(|| ("unknown".to_owned(), false));
+                json!({
+                    "ns_repo": repo.ns_repo(), "id": id, "title": title,
+                    "active": active, "closed": closed,
+                    "devcontainer": devcontainer::state(repo, &id),
                 })
-                .collect();
+            })
+            .collect();
 
-            main_entry.into_iter().chain(worktree_entries).collect::<Vec<_>>()
-        })
-        .collect();
+        rows.extend(main_entry.into_iter().chain(worktree_entries));
+    }
     Ok(Value::Array(rows))
 }
 
@@ -113,6 +114,7 @@ pub fn list_issues(home: &Path, repo: &RepoRef) -> CmdResult {
     let entry = repostore::lookup(home, repo)?;
     let paths = paths(home);
     let managers = settings::session_managers(home);
+    let plugin = settings::trackers(home)?.plugin_for(entry.tracker.as_deref())?.map(Path::to_owned);
     let main_entry = issue_entry(
         "main",
         "main",
@@ -122,7 +124,10 @@ pub fn list_issues(home: &Path, repo: &RepoRef) -> CmdResult {
     );
 
     let active_ids = active_issue_ids(&paths, &entry, &managers);
-    let open_issues = tracker::open_issues(repo);
+    let open_issues = plugin
+        .as_deref()
+        .map(|bin| tracker::open_issues(bin, repo))
+        .unwrap_or_default();
     let open_ids: HashSet<&str> = open_issues.iter().map(|(id, _)| id.as_str()).collect();
 
     let issue_entries = open_issues.iter().map(|(id, title)| {
@@ -140,7 +145,11 @@ pub fn list_issues(home: &Path, repo: &RepoRef) -> CmdResult {
         .iter()
         .filter(|id| !open_ids.contains(id.as_str()))
         .map(|id| {
-            let title = tracker::issue_title(repo, id).unwrap_or_else(|| "unknown".to_owned());
+            let title = plugin
+                .as_deref()
+                .and_then(|bin| tracker::issue(bin, repo, id))
+                .map(|(title, _)| title)
+                .unwrap_or_else(|| "unknown".to_owned());
             issue_entry(id, &title, true, true, devcontainer::state(repo, id))
         });
 
@@ -288,15 +297,6 @@ fn active_count(paths: &domain::Paths, entry: &RepoEntry, managers: &settings::M
 
 fn issue_entry(id: &str, title: &str, active: bool, closed: bool, dc: &str) -> Value {
     json!({ "id": id, "title": title, "active": active, "closed": closed, "devcontainer": dc })
-}
-
-/// --user 未指定時の自己解決。解決した値にも同じ検証をかける。
-fn resolved_user(user: Option<String>) -> Result<String, String> {
-    let user = match user {
-        Some(user) => user,
-        None => tracker::resolve_user().ok_or("failed to resolve GitHub user")?,
-    };
-    validated("user", user, domain::is_valid_user)
 }
 
 fn validated(name: &str, value: String, valid: fn(&str) -> bool) -> Result<String, String> {

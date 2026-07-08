@@ -61,5 +61,6 @@ fn ghq_entry(root: &Path, line: &str) -> Option<RepoEntry> {
         clone_path: root.join(host).join(ns).join(name),
         host: host.to_owned(),
         repo,
+        tracker: None, // ghq のエントリは常に既定トラッカー
     })
 }

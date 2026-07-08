@@ -172,7 +172,7 @@ _pick_project() {
   local json=$(_server list-projects)
   local items=()
 
-  local projects=$(printf '%s\n' "$json" | jq -r '.[] | "\(.number)\t\(.title)"')
+  local projects=$(printf '%s\n' "$json" | jq -r '.[] | "\(.id)\t\(.title)"')
   if [[ -n "$projects" ]]; then
     while IFS=$'\t' read -r num title; do
       items+=("${num}${TAB}${title}")

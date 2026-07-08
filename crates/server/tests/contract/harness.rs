@@ -1,9 +1,10 @@
 // 契約テストのハーネス。
 //
 // テスト対象は既定でビルドしたバイナリ、環境変数 WSM_SERVER_BIN で別の
-// ビルド (リリースバイナリ等) に差し替えられる。外部コマンド (gh, ghq, git,
-// tmux, herdr, docker, devcontainer) は PATH 先頭のフェイクに差し替え、
-// テストごとの一時 HOME と合わせて完全に隔離する。
+// ビルド (リリースバイナリ等) に差し替えられる。外部コマンド (ghq, git,
+// tmux, herdr, docker, devcontainer) と Tracker プラグイン (tracker) は
+// PATH 先頭 / 設定のフェイクに差し替え、テストごとの一時 HOME と合わせて
+// 完全に隔離する。
 //
 // フェイクの応答はテストが stub() で登録するパターン表 (拡張正規表現 →
 // stdout / exit code) で決まり、最初に一致したものが使われる。どのパターン
@@ -16,7 +17,7 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-const FAKE_COMMANDS: &[&str] = &["gh", "ghq", "git", "tmux", "herdr", "docker", "devcontainer"];
+const FAKE_COMMANDS: &[&str] = &["ghq", "git", "tmux", "herdr", "docker", "devcontainer", "tracker"];
 
 const FAKE_SCRIPT: &str = r#"#!/bin/sh
 # 汎用フェイク: 呼び出しを 1 行でログに記録し、パターン表の最初の一致で応答する。
@@ -85,9 +86,13 @@ impl TestEnv {
         fs::create_dir_all(env.fakes_dir()).unwrap();
         fs::write(env.log_file(), "").unwrap();
         FAKE_COMMANDS.iter().for_each(|cmd| env.install_fake(cmd));
-        // 既定のマネージャー設定 (tmux 先頭 = 既定)。フェイクのパスを指す。
-        // マネージャーはフォールバックを持たないため、設定が無いと open できない
-        env.write_home(".config/wsm/config.toml", &env.managers_config(&["tmux", "herdr"]));
+        // 既定のマネージャー設定 (tmux 先頭 = 既定) と Tracker プラグイン
+        // (フェイクの tracker)。どちらもフォールバックを持たないため、設定が
+        // 無いとそれぞれ open / プロジェクト照会ができない
+        env.write_home(
+            ".config/wsm/config.toml",
+            &format!("{}{}", env.managers_config(&["tmux", "herdr"]), env.tracker_config()),
+        );
         // 既定のリポジトリストア: owner/repo が ghq (github.com) にある。
         // 構成を変えるテストは ^ghq list$ を自前の stub() で上書きする
         env.stub_default("^ghq list$", "github.com/owner/repo\n");
@@ -186,6 +191,11 @@ impl TestEnv {
             .iter()
             .map(|name| format!("{name}_path = \"{}/{name}\"\n", self.fakes_dir_str()))
             .collect()
+    }
+
+    /// フェイクの Tracker プラグイン (tracker) を指す [[tracker]] 設定。
+    pub fn tracker_config(&self) -> String {
+        format!("[[tracker]]\nname = \"fake\"\npath = \"{}/tracker\"\n", self.fakes_dir_str())
     }
 
     /// フェイクの置き場 (PATH 先頭)。attach_command のバイナリパス検証に使う。

@@ -47,31 +47,29 @@ fn usage_error_for_unknown_subcommand() {
 fn list_projects_returns_open_projects_as_array() {
     // Arrange
     let env = TestEnv::new();
-    env.stub("^gh api user -q .login", "me\n").stub(
-        "^gh project list --owner me --format json",
-        "{\"number\":1,\"title\":\"Roadmap\"}\n{\"number\":3,\"title\":\"Backlog\"}\n",
+    env.stub(
+        "^tracker list-projects-v0$",
+        r#"[{"id":"1","title":"Roadmap"},{"id":"3","title":"Backlog"}]"#,
     );
 
     // Act
     let out = env.run(&["list-projects"]);
 
-    // Assert
+    // Assert: プラグインの返した順のまま
     assert_eq!(out.status, Some(0));
     assert_eq!(
         out.stdout_json(),
         json!([
-            { "number": 1, "title": "Roadmap" },
-            { "number": 3, "title": "Backlog" },
+            { "id": "1", "title": "Roadmap" },
+            { "id": "3", "title": "Backlog" },
         ])
     );
 }
 
 #[test]
-fn list_projects_returns_empty_array_when_no_projects() {
-    // Arrange
+fn list_projects_returns_empty_array_when_plugin_fails() {
+    // Arrange: プラグインは未スタブ → 起動失敗相当 (認証切れ等)。照会は縮退する
     let env = TestEnv::new();
-    env.stub("^gh api user -q .login", "me\n")
-        .stub("^gh project list --owner me", "");
 
     // Act
     let out = env.run(&["list-projects"]);
@@ -82,35 +80,37 @@ fn list_projects_returns_empty_array_when_no_projects() {
 }
 
 #[test]
-fn list_projects_with_explicit_user_skips_self_resolution() {
-    // Arrange
+fn list_projects_fails_when_no_tracker_configured() {
+    // Arrange: [[tracker]] のない設定。対話フローの入り口なので縮退せず表面化させる
     let env = TestEnv::new();
-    env.stub("^gh project list --owner someone", "{\"number\":7,\"title\":\"Ops\"}\n");
-
-    // Act
-    let out = env.run(&["list-projects", "--user", "someone"]);
-
-    // Assert
-    assert_eq!(out.status, Some(0));
-    assert_eq!(out.stdout_json(), json!([{ "number": 7, "title": "Ops" }]));
-    assert!(
-        !env.invocations().iter().any(|l| l.starts_with("gh api user")),
-        "must not resolve the user when --user is given"
-    );
-}
-
-#[test]
-fn list_projects_fails_when_user_cannot_be_resolved() {
-    // Arrange: gh は成功するが login が空
-    let env = TestEnv::new();
-    env.stub("^gh api user -q .login", "");
+    env.write_home(".config/wsm/config.toml", &env.managers_config(&["tmux", "herdr"]));
 
     // Act
     let out = env.run(&["list-projects"]);
 
     // Assert
     assert_eq!(out.status, Some(1));
-    assert_eq!(out.stderr_json(), json!({ "error": "failed to resolve GitHub user" }));
+    assert_eq!(
+        out.stderr_json(),
+        json!({ "error": "no tracker configured (add [[tracker]] to config.toml)" })
+    );
+}
+
+#[test]
+fn list_projects_drops_items_with_invalid_ids() {
+    // Arrange: プラグインの出力は信頼しない入力。id の形に違反する要素は捨てる
+    let env = TestEnv::new();
+    env.stub(
+        "^tracker list-projects-v0$",
+        r#"[{"id":"1","title":"Ok"},{"id":"../evil","title":"Bad"},{"id":7,"title":"NotString"}]"#,
+    );
+
+    // Act
+    let out = env.run(&["list-projects"]);
+
+    // Assert
+    assert_eq!(out.status, Some(0));
+    assert_eq!(out.stdout_json(), json!([{ "id": "1", "title": "Ok" }]));
 }
 
 // --- 入力検証 ---
@@ -173,9 +173,9 @@ fn parameter_shapes_are_validated() {
         (&["remove", "--repo", "owner/repo", "--issue", "42;rm -rf"], "Invalid issue: 42;rm -rf"),
         (&["open", "--repo", "owner/repo", "--issue", "../42"], "Invalid issue: ../42"),
         (&["list-devcontainer-configs", "--repo", "owner/repo", "--issue", "-42"], "Invalid issue: -42"),
-        // user: 英数と - のみ / project: 数字のみ
-        (&["list-projects", "--user", "bad_user"], "Invalid user: bad_user"),
-        (&["list-repos", "--project", "5x", "--user", "me"], "Invalid project: 5x"),
+        // project: issue と同じ不透明な id の文法
+        (&["list-repos", "--project", "5;x"], "Invalid project: 5;x"),
+        (&["list-repos", "--project", "-5"], "Invalid project: -5"),
     ];
 
     for (args, expected) in cases {
@@ -192,7 +192,7 @@ fn parameter_shapes_are_validated() {
 fn repeated_flags_use_the_last_value() {
     // Arrange
     let env = TestEnv::new();
-    env.stub("^docker ps -a", "").stub("^gh issue list --repo owner/repo", "");
+    env.stub("^docker ps -a", "").stub("^tracker list-issues-v0 --repo owner/repo$", "[]");
 
     // Act
     let out = env.run(&["list-issues", "--repo", "aaa/xxx", "--repo", "owner/repo"]);
@@ -210,7 +210,7 @@ fn dotted_repo_names_stay_valid() {
     let env = TestEnv::new();
     env.stub("^ghq list$", "github.com/owner/.github\n")
         .stub("^docker ps -a", "")
-        .stub("^gh issue list --repo owner/.github", "");
+        .stub("^tracker list-issues-v0 --repo owner/.github$", "[]");
 
     // Act
     let out = env.run(&["list-issues", "--repo", "owner/.github"]);
@@ -222,19 +222,16 @@ fn dotted_repo_names_stay_valid() {
 
 #[test]
 fn list_projects_preserves_backslashes_in_titles() {
-    // Arrange: タイトルにバックスラッシュを含む Project (zsh の echo は \\ を解釈して JSON を壊す)
+    // Arrange: タイトルにバックスラッシュを含む Project (JSON エスケープで保たれる)
     let env = TestEnv::new();
-    env.stub("^gh api user -q .login", "me\n").stub(
-        "^gh project list --owner me --format json",
-        "{\"number\":1,\"title\":\"Group \\\\ A\"}\n",
-    );
+    env.stub("^tracker list-projects-v0$", r#"[{"id":"1","title":"Group \\ A"}]"#);
 
     // Act
     let out = env.run(&["list-projects"]);
 
     // Assert
     assert_eq!(out.status, Some(0));
-    assert_eq!(out.stdout_json(), json!([{ "number": 1, "title": "Group \\ A" }]));
+    assert_eq!(out.stdout_json(), json!([{ "id": "1", "title": "Group \\ A" }]));
 }
 
 // --- list-repos ---
@@ -262,7 +259,7 @@ fn list_repos_lists_all_ghq_repos_when_project_none() {
         ])
     );
     assert!(
-        !env.invocations().iter().any(|l| l.starts_with("gh ")),
+        !env.invocations().iter().any(|l| l.starts_with("tracker ")),
         "project none must not touch the tracker: {:?}",
         env.invocations()
     );
@@ -297,11 +294,11 @@ fn list_repos_counts_active_workspaces() {
 fn list_repos_filters_project_repos_by_local_clones() {
     // Arrange: Project には 2 リポジトリ、ローカルにあるのは片方だけ
     let env = TestEnv::new();
-    env.stub("^gh api graphql -f query=", "owner/repo\nowner/other\n")
+    env.stub("^tracker project-repos-v0 --project 5$", r#"["owner/repo","owner/other"]"#)
         .stub("^ghq list$", "github.com/owner/repo\ngithub.com/mine/tool\n");
 
     // Act
-    let out = env.run(&["list-repos", "--project", "5", "--user", "me"]);
+    let out = env.run(&["list-repos", "--project", "5"]);
 
     // Assert
     assert_eq!(out.status, Some(0));
@@ -446,6 +443,71 @@ fn invalid_repo_entry_in_config_fails_loudly() {
     assert_eq!(out.stderr_json(), json!({ "error": "[[repo]] requires ns in config.toml" }));
 }
 
+// --- Tracker プラグインの選択と検証 ---
+
+#[test]
+fn list_issues_degrades_to_main_when_no_tracker_configured() {
+    // Arrange: [[tracker]] のない設定。リポジトリ単位の照会は縮退する
+    // (プロジェクト照会と違い、Tracker なしでも main の開閉はできるべき)
+    let env = TestEnv::new();
+    env.write_home(".config/wsm/config.toml", &env.managers_config(&["tmux", "herdr"]))
+        .stub("^docker ps -a", "");
+
+    // Act
+    let out = env.run(&["list-issues", "--repo", "owner/repo"]);
+
+    // Assert
+    assert_eq!(out.status, Some(0));
+    assert_eq!(
+        out.stdout_json(),
+        json!([
+            { "id": "main", "title": "main", "active": false, "closed": false, "devcontainer": "none" },
+        ])
+    );
+}
+
+#[test]
+fn repo_with_unknown_tracker_name_is_a_config_error() {
+    // Arrange: [[repo]] が列挙にないトラッカー名を指す (設定誤りは表面化させる)
+    let env = TestEnv::new();
+    let config = format!(
+        "{}{}[[repo]]\npath = \"~/work/aaa\"\nhost = \"gitlab.example.com\"\nns = \"myteam\"\ntracker = \"jira\"\n",
+        env.managers_config(&["tmux", "herdr"]),
+        env.tracker_config()
+    );
+    env.write_home(".config/wsm/config.toml", &config).stub("^ghq list$", "");
+
+    // Act
+    let out = env.run(&["list-issues", "--repo", "myteam/aaa"]);
+
+    // Assert
+    assert_eq!(out.status, Some(1));
+    assert_eq!(out.stderr_json(), json!({ "error": "tracker not configured: jira" }));
+}
+
+#[test]
+fn invalid_issue_ids_from_plugin_are_dropped() {
+    // Arrange: プラグインの出力は信頼しない入力。id の文法違反と番兵値 main は捨てる
+    let env = TestEnv::new();
+    env.stub("^docker ps -a", "").stub(
+        "^tracker list-issues-v0 --repo owner/repo$",
+        r#"[{"id":"42","title":"Ok"},{"id":"../evil","title":"Bad"},{"id":"main","title":"Sentinel"}]"#,
+    );
+
+    // Act
+    let out = env.run(&["list-issues", "--repo", "owner/repo"]);
+
+    // Assert
+    assert_eq!(out.status, Some(0));
+    assert_eq!(
+        out.stdout_json(),
+        json!([
+            { "id": "main", "title": "main", "active": false, "closed": false, "devcontainer": "none" },
+            { "id": "42", "title": "Ok", "active": false, "closed": false, "devcontainer": "none" },
+        ])
+    );
+}
+
 // --- list-workspaces ---
 
 #[test]
@@ -479,7 +541,10 @@ fn list_workspaces_lists_main_and_worktree_entries() {
         .stub("^tmux has-session -t =owner_repo$", "")
         .stub("^tmux has-session -t =owner_repo_42$", "")
         .stub("^docker ps -a", "")
-        .stub("^gh issue view 42 --repo owner/repo --json title,state", "Fix bug\tCLOSED\n");
+        .stub(
+            "^tracker issue-v0 --repo owner/repo --id 42$",
+            r#"{"title":"Fix bug","state":"closed"}"#,
+        );
 
     // Act
     let out = env.run(&["list-workspaces"]);
@@ -501,8 +566,10 @@ fn list_workspaces_lists_main_and_worktree_entries() {
 fn list_issues_combines_main_and_open_issues() {
     // Arrange
     let env = TestEnv::new();
-    env.stub("^docker ps -a", "")
-        .stub("^gh issue list --repo owner/repo", "42\tFix bug\n43\tAdd feature\n");
+    env.stub("^docker ps -a", "").stub(
+        "^tracker list-issues-v0 --repo owner/repo$",
+        r#"[{"id":"42","title":"Fix bug"},{"id":"43","title":"Add feature"}]"#,
+    );
 
     // Act
     let out = env.run(&["list-issues", "--repo", "owner/repo"]);
@@ -537,9 +604,9 @@ fn list_issues_shows_orphaned_worktrees_as_closed_in_worktree_order() {
         .stub("^tmux has-session -t =owner_repo_41$", "")
         .stub("^tmux has-session -t =owner_repo_42$", "")
         .stub("^docker ps -a", "")
-        .stub("^gh issue list --repo owner/repo", "43\tOther work\n")
-        .stub("^gh issue view 41 --repo owner/repo --json title -q", "Old bug\n")
-        .stub("^gh issue view 42 --repo owner/repo --json title -q", "Stale spike\n");
+        .stub("^tracker list-issues-v0 --repo owner/repo$", r#"[{"id":"43","title":"Other work"}]"#)
+        .stub("^tracker issue-v0 --repo owner/repo --id 41$", r#"{"title":"Old bug","state":"closed"}"#)
+        .stub("^tracker issue-v0 --repo owner/repo --id 42$", r#"{"title":"Stale spike","state":"closed"}"#);
 
     // Act
     let out = env.run(&["list-issues", "--repo", "owner/repo"]);
@@ -567,7 +634,10 @@ fn list_issues_aggregates_devcontainer_states() {
             "^docker ps -a --filter label=wsm.ns-repo=owner/repo --filter label=wsm.issue-id=43 ",
             "exited\nrunning\n",
         )
-        .stub("^gh issue list --repo owner/repo", "42\tFix bug\n43\tAdd feature\n");
+        .stub(
+            "^tracker list-issues-v0 --repo owner/repo$",
+            r#"[{"id":"42","title":"Fix bug"},{"id":"43","title":"Add feature"}]"#,
+        );
 
     // Act
     let out = env.run(&["list-issues", "--repo", "owner/repo"]);
@@ -586,11 +656,12 @@ fn list_issues_aggregates_devcontainer_states() {
 
 #[test]
 fn list_issues_preserves_backslash_sequences_in_titles() {
-    // Arrange: タイトルに literal な \t (バックスラッシュ + t) を含む Issue。
-    // zsh の echo は \t をタブに解釈してタイトルを壊す
+    // Arrange: タイトルに literal な \t (バックスラッシュ + t) を含む Issue
     let env = TestEnv::new();
-    env.stub("^docker ps -a", "")
-        .stub("^gh issue list --repo owner/repo", "42\tKeep \\t literal\n");
+    env.stub("^docker ps -a", "").stub(
+        "^tracker list-issues-v0 --repo owner/repo$",
+        r#"[{"id":"42","title":"Keep \\t literal"}]"#,
+    );
 
     // Act
     let out = env.run(&["list-issues", "--repo", "owner/repo"]);
@@ -1200,7 +1271,7 @@ fn list_issues_marks_herdr_workspace_as_active() {
             ),
         )
         .stub("^docker ps -a", "")
-        .stub("^gh issue list --repo owner/repo", "42\tFix bug\n");
+        .stub("^tracker list-issues-v0 --repo owner/repo$", r#"[{"id":"42","title":"Fix bug"}]"#);
 
     // Act
     let out = env.run(&["list-issues", "--repo", "owner/repo"]);
@@ -1543,7 +1614,7 @@ fn list_repos_returns_empty_array_when_ghq_fails() {
 
 #[test]
 fn list_issues_degrades_to_main_when_tracker_fails() {
-    // Arrange: gh は未スタブ → 起動失敗相当 (gh 未ログイン等)
+    // Arrange: プラグインは未スタブ → 起動失敗相当 (認証切れ等)
     let env = TestEnv::new();
 
     // Act
