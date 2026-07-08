@@ -153,6 +153,7 @@ pub fn open(home: &Path, repo: &RepoRef, id: &WorkspaceId, configs: &[String]) -
     }
     let session = session::ensure(manager, repo, id, &workspace, &paths)?;
 
+    let shell = settings::devcontainer_shell(home);
     let outcomes = configs
         .iter()
         .map(|cfg| {
@@ -162,7 +163,7 @@ pub fn open(home: &Path, repo: &RepoRef, id: &WorkspaceId, configs: &[String]) -
                 .map_err(|_| format!("devcontainer up failed for {cfg}"))?;
             // 配線: DevContainer が exec コマンドを組み立て、SessionManager が
             // 🐳 ウィンドウを追加する (dedup キーはコンテナ ID)
-            if let Some((cid, command)) = devcontainer::exec_command(repo, id, &cname, &paths) {
+            if let Some((cid, command)) = devcontainer::exec_command(repo, id, &cname, &paths, &shell) {
                 session::add_window(manager, &session, "🐳", &command, &cid);
             }
             Ok(format!("{}: {cname}", outcome.label()))

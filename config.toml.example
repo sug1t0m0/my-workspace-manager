@@ -11,3 +11,6 @@ default_devcontainer_config = "/path/to/your/default/.devcontainer/devcontainer.
 
 # worktree の置き場 (既定: ~/worktrees)
 # worktree_root = "~/worktrees"
+
+# 🐳 ウィンドウで docker exec するシェル (既定: zsh)
+# devcontainer_shell = "zsh"

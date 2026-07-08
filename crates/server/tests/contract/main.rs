@@ -979,6 +979,32 @@ fn list_issues_marks_herdr_workspace_as_active() {
 // --- open --config (DevContainer) ---
 
 #[test]
+fn respects_configured_devcontainer_shell() {
+    // Arrange: 🐳 ウィンドウで exec するシェルを bash に設定
+    let env = TestEnv::new();
+    env.write_home(".config/wsm/config.toml", "devcontainer_shell = \"bash\"\n")
+        .write_home("ghq/github.com/owner/repo/.devcontainer/devcontainer.json", "{}")
+        .stub("^tmux new-session -d -s owner_repo -c ", "")
+        .stub("^docker ps -a", "")
+        .stub("^devcontainer up --workspace-folder ", "")
+        .stub("^docker ps -q ", "abc123\n")
+        .stub("^docker inspect --format ", "[]\n")
+        .stub("^tmux new-window -d -P -F ", "%5\n");
+    let cfg = format!("{}/ghq/github.com/owner/repo/.devcontainer/devcontainer.json", env.home_str());
+
+    // Act
+    let out = env.run(&["open", "--repo", "owner/repo", "--issue", "main", "--config", &cfg]);
+
+    // Assert
+    assert_eq!(out.status, Some(0));
+    assert!(
+        env.invocations().iter().any(|l| l.starts_with("tmux new-window") && l.ends_with("'abc123' bash")),
+        "exec shell must follow devcontainer_shell: {:?}",
+        env.invocations()
+    );
+}
+
+#[test]
 fn open_with_config_starts_devcontainer_and_adds_window() {
     // Arrange: コンテナは存在しない (before = none) → created
     let env = TestEnv::new();

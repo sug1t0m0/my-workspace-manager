@@ -129,6 +129,7 @@ impl TestEnv {
             .env_remove("WSM_SESSION_MANAGER")
             .env_remove("WSM_DEFAULT_DEVCONTAINER_CONFIG")
             .env_remove("WSM_WORKTREE_ROOT")
+            .env_remove("WSM_DEVCONTAINER_SHELL")
             .env_remove("HERDR_SOCKET_PATH")
             .env_remove("HERDR_SESSION")
             .env_remove("HERDR_ENV")

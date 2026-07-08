@@ -336,7 +336,8 @@ worktree のルートは $HOME 配下にあることを前提とする。
 (🐳) をセッションに追加する。責務の分割:
 
 - DevContainer ロール: 起動済みコンテナの exec コマンドとコンテナ ID を
-  組み立てて返す(docker・ラベル・remoteUser の知識はここに閉じる)
+  組み立てて返す(docker・ラベル・remoteUser の知識はここに閉じる)。
+  exec するシェルは設定 `devcontainer_shell`(既定 `zsh`)
 - SessionManager ロール: add_window(session, `🐳`, command, dedup_key=コンテナ ID)
   でウィンドウを追加する(冪等。herdr は noop)
 - 両者をつなぐのはオーケストレーション層のみ
@@ -383,6 +384,7 @@ transport にかかわらず同じ設定が見える。フォーマットは TOM
 |---|---|
 | `session_manager` | 既定のセッションマネージャー |
 | `worktree_root` | worktree の置き場 (既定 `~/worktrees`) |
+| `devcontainer_shell` | 🐳 ウィンドウで docker exec するシェル (既定 `zsh`) |
 | `default_devcontainer_config` | フォールバック devcontainer 設定のパス |
 
 優先順位: 環境変数 > 設定ファイル > 組み込み既定値。環境変数は
@@ -683,6 +685,7 @@ add_window 化、gh 直呼びの解消、個人依存既定値の除去、クラ
 |---|---|---|
 | `WSM_SESSION_MANAGER` | (config.toml) | セッションマネージャーのオーバーライド。UI の `-m` / fzf 選択が export する |
 | `WSM_WORKTREE_ROOT` | (config.toml) | worktree 置き場のオーバーライド |
+| `WSM_DEVCONTAINER_SHELL` | (config.toml) | 🐳 ウィンドウのシェルのオーバーライド |
 | `WSM_DEFAULT_DEVCONTAINER_CONFIG` | (config.toml) | フォールバック devcontainer 設定のオーバーライド |
 | `WSM_TRANSPORT` | 自動判別 | server への到達方法の明示指定 (`local` / `ssh`) |
 | `WSM_HOST` | `host.docker.internal` | (ssh transport) SSH 接続先 |

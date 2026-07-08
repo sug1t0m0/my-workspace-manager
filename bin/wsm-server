@@ -122,6 +122,17 @@ _session_manager() {
   echo "$_session_manager_cache"
 }
 
+# 🐳 ウィンドウで docker exec するシェル (config.toml の devcontainer_shell。
+# 環境変数で上書き可。既定 zsh)
+typeset -g _devcontainer_shell_cache=""
+_devcontainer_shell() {
+  if [[ -z "$_devcontainer_shell_cache" ]]; then
+    local sh=${WSM_DEVCONTAINER_SHELL:-$(_config_get devcontainer_shell)}
+    _devcontainer_shell_cache=${sh:-zsh}
+  fi
+  echo "$_devcontainer_shell_cache"
+}
+
 # herdr のセッション名 <ns>.<repo>。GitHub の namespace にドットが使えない
 # ため、最初のドットが常に区切りとなり単射になる。
 _herdr_session_name() {
@@ -475,7 +486,7 @@ _devcontainer_exec_command() {
 
   local exec_cmd="docker exec -it"
   [[ -n "$remote_user" ]] && exec_cmd+=" --user '$remote_user'"
-  exec_cmd+=" -w '$container_workdir' '$cid' zsh"
+  exec_cmd+=" -w '$container_workdir' '$cid' $(_devcontainer_shell)"
 
   printf '%s\t%s\n' "$cid" "$exec_cmd"
 }

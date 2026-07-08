@@ -29,6 +29,13 @@ pub fn session_manager(home: &Path) -> Result<SessionManager, String> {
     }
 }
 
+/// 🐳 ウィンドウで docker exec するシェル (既定 `zsh`)。
+pub fn devcontainer_shell(home: &Path) -> String {
+    env_override("WSM_DEVCONTAINER_SHELL")
+        .or_else(|| config_value(home, "devcontainer_shell"))
+        .unwrap_or_else(|| "zsh".to_owned())
+}
+
 /// worktree の置き場 (既定 `~/worktrees`)。
 pub fn worktree_root(home: &Path) -> PathBuf {
     env_override("WSM_WORKTREE_ROOT")

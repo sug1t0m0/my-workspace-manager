@@ -154,6 +154,7 @@ pub fn exec_command(
     id: &WorkspaceId,
     cname: &str,
     paths: &domain::Paths,
+    shell: &str,
 ) -> Option<(String, String)> {
     let ns_repo = repo.ns_repo();
     let cid = exec::stdout_if_ok("docker", &labels_args(&ns_repo, id.as_str(), Some(cname), "ps", "-q", ""))?
@@ -178,7 +179,7 @@ pub fn exec_command(
     let ws = domain::workspace_path(paths, repo, id);
     let workdir = format!("/workspaces/{}", ws.strip_prefix(&paths.home).unwrap_or(&ws).display());
     let user_part = remote_user.map(|u| format!(" --user '{u}'")).unwrap_or_default();
-    let command = format!("docker exec -it{user_part} -w '{workdir}' '{cid}' zsh");
+    let command = format!("docker exec -it{user_part} -w '{workdir}' '{cid}' {shell}");
     Some((cid, command))
 }
 
