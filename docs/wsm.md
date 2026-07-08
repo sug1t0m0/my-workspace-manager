@@ -517,6 +517,21 @@ remove は逆順で破棄する(Terminal は管理外なので対象外):
 契約テストは「両実装が通る」範囲を対象とするため、この差は docs で
 管理する(zsh 版に合わせたテストは書かない)。
 
+### 配布は GitHub Releases で行う
+
+タグ `v*` の push で GitHub Actions が契約テストを両実装で通してから
+ビルドし、成果物を Release に添付する (.github/workflows/release.yml)。
+
+- 成果物: `wsm-server-aarch64-apple-darwin`(Rust サーバー、macOS arm64
+  ホスト用)と `wsm`(zsh クライアント。ホスト・DevContainer 共通)
+- dotfiles は chezmoi external で `releases/latest/download/<asset>` から
+  取得する(`bin/` 直取りは廃止)
+- 将来 Rust クライアントを配るときは `wsm-client-<target>`(linux
+  amd64 / arm64 等)を成果物に追加する。クロスビルドが必要になるのは
+  この時点で、Releases 方式を選んだ主な理由
+- リポジトリ内の `bin/wsm-server`(zsh)は配布物ではなく、契約テストの
+  リファレンス実装として残る
+
 ### JSON API を書き換えの境界とする
 
 Rust / Go 版はまず wsm-server を置き換える。上記 JSON API を仕様として実装し、
@@ -637,11 +652,11 @@ wsm リポジトリと dotfiles の契約になる。
 
 | dotfiles に残るもの | 内容 |
 |---|---|
-| インストール導線 | wsm の実行ファイルを `~/.local/bin` に配置する (dotfiles が chezmoi external で本リポジトリの `bin/` から取得) |
+| インストール導線 | `~/.local/bin/wsm-server` と `~/.local/bin/wsm` を chezmoi external で GitHub Releases (`releases/latest/download/<asset>`) から取得・配置する |
 | 設定ファイルの配置 | `~/.config/wsm/config.toml` (マシン・個人依存の値) |
 | SSH ホワイトリスト | `allowed-commands.sh` の `wsm-server` エントリ。wsm が必要とするのはこれのみ |
 | SSH 鍵の配置 | DevContainer → ホストの鍵 (`~/.ssh/devcontainer`) |
-| 配布の出し分け | DevContainer には UI (`wsm`) のみ配り、サーバー (`wsm-server`) と設定ファイルは配らない |
+| 配布の出し分け | DevContainer にはクライアント (`wsm`) のみ配り、サーバー (`wsm-server`) と設定ファイルは配らない |
 
 ## 書き換え前の残タスク
 

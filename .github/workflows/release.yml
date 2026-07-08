@@ -1,0 +1,38 @@
+# タグ v* の push で、契約テストを両実装で通してから成果物を GitHub Release に
+# 添付する。dotfiles (chezmoi external) は releases/latest/download/ から取得する
+# (docs/wsm.md の「dotfiles との境界」)。
+#
+# 成果物:
+#   wsm-server-aarch64-apple-darwin  … サーバー (Rust, macOS arm64 ホスト用)
+#   wsm                              … クライアント (zsh。ホスト・DevContainer 共通)
+# 将来 Rust クライアントを配るときは wsm-client-<target> をここに追加する。
+name: release
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - name: Contract tests (Rust server)
+        run: cargo test --test contract
+      - name: Contract tests (zsh reference server)
+        run: WSM_SERVER_BIN="$PWD/bin/wsm-server" cargo test --test contract
+      - name: Build release binary
+        run: cargo build --release
+      - name: Stage assets
+        run: |
+          mkdir -p dist
+          cp target/release/wsm-server dist/wsm-server-aarch64-apple-darwin
+          cp bin/wsm dist/wsm
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${GITHUB_REF_NAME}" --generate-notes dist/*
