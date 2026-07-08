@@ -237,18 +237,20 @@ _pick_issue() {
     local json=$(_server "${query[@]}")
     local items=()
     if (( ${#parents[@]} > 0 )); then
-      items+=("__self__${TAB}(この Issue #${parents[-1]} を開く)")
-      items+=("__up__${TAB}..")
+      items+=("__self__${TAB}  (この Issue #${parents[-1]} を開く)")
+      items+=("__up__${TAB}  ..")
     fi
     while IFS=$'\t' read -r id title active closed dc children; do
       [[ -n "$id" ]] || continue
+      # 子の有無 (▸) は行頭に出す。行末だと長いタイトルの切り詰めで見えなくなる
+      local marker="  "
+      [[ "$children" == "true" ]] && marker="▸ "
       local display=""
       if [[ "$id" == "main" ]]; then
-        display="main  (ディスカッション・調査用)"
+        display="${marker}main  (ディスカッション・調査用)"
       else
-        display="#${id}  ${title}"
+        display="${marker}#${id}  ${title}"
       fi
-      [[ "$children" == "true" ]] && display+="  ▸"
       if [[ "$closed" == "true" ]]; then
         display+="  ✔ closed"
       fi
