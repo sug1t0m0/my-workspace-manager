@@ -284,11 +284,11 @@ _attach_command() {
   local session=$1 workspace=$2
   case "$(_session_manager)" in
     tmux)
-      local tmux_bin=${commands[tmux]:-/opt/homebrew/bin/tmux}
+      local tmux_bin=${commands[tmux]:-tmux}
       printf "%s attach-session -t '%s'" "$tmux_bin" "$session"
       ;;
     herdr)
-      local herdr_bin=${commands[herdr]:-"$HOME/.local/bin/herdr"}
+      local herdr_bin=${commands[herdr]:-herdr}
       local script="cd '$workspace' && exec '$herdr_bin' --session '$session'"
       printf "/bin/bash -lc %q" "$script"
       ;;

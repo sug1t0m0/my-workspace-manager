@@ -254,23 +254,25 @@ pub fn add_window(manager: SessionManager, session: &str, name: &str, command: &
 }
 
 /// UI が Terminal にそのまま渡すアタッチ用コマンド (open 応答の attach_command)。
-pub fn attach_command(manager: SessionManager, session: &str, workspace: &Path, home: &Path) -> String {
+/// バイナリは PATH から絶対パスに解決する (Ghostty はログインシェルを介さず
+/// コマンドを起動するため)。見つからないときは素の名前に倒す。
+pub fn attach_command(manager: SessionManager, session: &str, workspace: &Path) -> String {
     match manager {
         SessionManager::Tmux => {
-            let tmux = exec::which("tmux")
-                .map(|p| p.to_string_lossy().into_owned())
-                .unwrap_or_else(|| "/opt/homebrew/bin/tmux".to_owned());
+            let tmux = resolved_bin("tmux");
             format!("{tmux} attach-session -t '{session}'")
         }
         SessionManager::Herdr => {
-            let herdr = exec::which("herdr")
-                .map(|p| p.to_string_lossy().into_owned())
-                .unwrap_or_else(|| home.join(".local/bin/herdr").to_string_lossy().into_owned());
+            let herdr = resolved_bin("herdr");
             let script =
                 format!("cd '{}' && exec '{herdr}' --session '{session}'", workspace.display());
             format!("/bin/bash -lc {}", quote_word(&script))
         }
     }
+}
+
+fn resolved_bin(name: &str) -> String {
+    exec::which(name).map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|| name.to_owned())
 }
 
 /// zsh の printf %q 相当: 英数と `_./-` 以外をバックスラッシュでエスケープする。

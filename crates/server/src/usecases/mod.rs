@@ -169,7 +169,7 @@ pub fn open(home: &Path, repo: &RepoRef, id: &WorkspaceId, configs: &[String]) -
         "message": message,
         "session": session,
         "path": workspace.to_string_lossy(),
-        "attach_command": session::attach_command(manager, &session, &workspace, home),
+        "attach_command": session::attach_command(manager, &session, &workspace),
     }))
 }
 
