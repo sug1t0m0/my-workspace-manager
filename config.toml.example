@@ -30,9 +30,11 @@ default_devcontainer_config = "/path/to/your/default/.devcontainer/devcontainer.
 
 # Tracker プラグインの列挙 (docs/wsm.md「Tracker プラグイン契約」)。
 # 列挙したものだけが存在する (フォールバックはない)。
+# github-api = GraphQL 直叩き + gh 認証。sub-issues (階層) 対応の推奨版。
+# gh CLI 版 (~/.local/bin/wsm-tracker-github) もある (階層なし)。
 [[tracker]]
 name = "github"
-path = "~/.local/bin/wsm-tracker-github"
+path = "~/.local/bin/wsm-tracker-github-api"
 
 # ghq 管理外のリポジトリの登録 (複数可)。識別子は <ns>/<name> になり、
 # worktree は <worktree_root>/<host>/<ns>/<name>/<id> に作られる (ghq のものと共通)。

@@ -1,0 +1,16 @@
+# 公式 GitHub Tracker プラグイン (GraphQL API 直叩き・sub-issues 対応)。
+# 認証は gh から借りる (gh auth token)。gh 版 (crates/tracker-github) と併存し、
+# どちらを使うかは config.toml の [[tracker]] で選ぶ。
+[package]
+name = "wsm-tracker-github-api"
+version = "0.1.0"
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+serde_json = "1"
+ureq = { version = "2", features = ["json"] }
+
+[dev-dependencies]
+serde_json = "1"
+tempfile = "3"
