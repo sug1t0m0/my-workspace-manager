@@ -131,6 +131,7 @@ impl TestEnv {
             .args(args)
             .env("PATH", path)
             .env("WSM_TRACKER_GITHUB_API_URL", api_url)
+            .env_remove("WSM_TRACKER_OWNER")
             .env_remove("WSM_TRACKER_GITHUB_OWNER")
             .envs(envs.iter().copied())
             .output()

@@ -80,6 +80,7 @@ impl TestEnv {
             .env("PATH", path)
             .env("WSM_TEST_LOG", self.dir("invocations.log"))
             .env("WSM_TEST_RESPONSES", self.dir("responses"))
+            .env_remove("WSM_TRACKER_OWNER")
             .env_remove("WSM_TRACKER_GITHUB_OWNER")
             .envs(envs.iter().copied())
             .output()

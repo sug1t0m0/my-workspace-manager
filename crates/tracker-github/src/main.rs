@@ -154,11 +154,15 @@ fn scopes_header(response: &str) -> Option<&str> {
     })
 }
 
-/// プロジェクトの owner。環境変数が優先、なければ gh の認証ユーザー。
+/// repo-group の owner。[[tracker]] の拡張キー `owner` (WSM_TRACKER_OWNER) が
+/// 最優先。旧グローバル環境変数 WSM_TRACKER_GITHUB_OWNER も後方互換で読む。
+/// なければ gh の認証ユーザー。
 fn owner() -> Result<String, String> {
-    if let Ok(owner) = std::env::var("WSM_TRACKER_GITHUB_OWNER") {
-        if !owner.is_empty() {
-            return Ok(owner);
+    for var in ["WSM_TRACKER_OWNER", "WSM_TRACKER_GITHUB_OWNER"] {
+        if let Ok(owner) = std::env::var(var) {
+            if !owner.is_empty() {
+                return Ok(owner);
+            }
         }
     }
     let login = gh(&["api", "user", "-q", ".login"])?.trim().to_owned();

@@ -28,13 +28,23 @@ default_devcontainer_config = "/path/to/your/default/.devcontainer/devcontainer.
 # TOML の意味論上、[[...]] テーブルより後ろに置いたトップレベルキーは
 # テーブルのキーと解釈されるため、以降にトップレベルキーを足さないこと。
 
-# Tracker プラグインの列挙 (docs/wsm.md「Tracker プラグイン契約」)。
-# 列挙したものだけが存在する (フォールバックはない)。
+# Tracker プラグインのインスタンスの列挙 (docs/wsm.md「Tracker プラグイン契約」)。
+# 列挙したものだけが存在する (フォールバックはない)。同じバイナリを別名・
+# 別設定で複数登録できる (例: 個人用と organization 用)。
+# 予約キー (name / path / ns) 以外は WSM_TRACKER_<KEY大文字> の環境変数として
+# プラグインに渡る (owner → WSM_TRACKER_OWNER)。
 # github-api = GraphQL 直叩き + gh 認証。sub-issues (階層) 対応の推奨版。
 # gh CLI 版 (~/.local/bin/wsm-tracker-github) もある (階層なし)。
 [[tracker]]
 name = "github"
 path = "~/.local/bin/wsm-tracker-github-api"
+
+# organization 用のインスタンスの例:
+# [[tracker]]
+# name = "github-acme"
+# path = "~/.local/bin/wsm-tracker-github-api"
+# owner = "acme-corp"          # → WSM_TRACKER_OWNER (repo-group の照会先)
+# ns = "acme-corp,acme-labs"   # この ns のリポジトリの既定トラッカーになる
 
 # ghq 管理外のリポジトリの登録 (複数可)。識別子は <ns>/<name> になり、
 # worktree は <worktree_root>/<host>/<ns>/<name>/<id> に作られる (ghq のものと共通)。

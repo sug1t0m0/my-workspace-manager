@@ -18,20 +18,48 @@ fn paths(home: &Path) -> domain::Paths {
     domain::Paths { home: home.to_owned(), worktree_root: settings::worktree_root(home) }
 }
 
-/// open な repo-group の一覧 (既定トラッカー)。トラッカー未設定は
-/// 対話フローの入り口で設定誤りを表面化させるため、縮退せずエラーにする。
+/// open な repo-group の一覧。設定された全トラッカーに並列で照会して束ね、
+/// 各グループに tracker (インスタンス名) を付ける。並びは既定トラッカーが
+/// 先頭で、あとは設定順。トラッカー未設定は対話フローの入り口で設定誤りを
+/// 表面化させるため、縮退せずエラーにする (個々のトラッカーの失敗は
+/// そのトラッカーのグループが欠けるだけ)。
 pub fn list_repo_groups(home: &Path) -> CmdResult {
     let trackers = settings::trackers(home)?;
-    Ok(Value::Array(tracker::repo_groups(trackers.default_plugin()?)))
+    trackers.default_tracker()?; // 未設定の検出
+
+    let groups: Vec<Value> = std::thread::scope(|scope| {
+        let handles: Vec<_> = trackers
+            .all()
+            .into_iter()
+            .map(|t| scope.spawn(move || (t.name(), tracker::repo_groups(t))))
+            .collect();
+        handles
+            .into_iter()
+            .filter_map(|handle| handle.join().ok())
+            .flat_map(|(name, groups)| {
+                groups.into_iter().map(move |mut group| {
+                    group["tracker"] = Value::from(name);
+                    group
+                })
+            })
+            .collect()
+    });
+    Ok(Value::Array(groups))
 }
 
-/// repo-group に属する open な Issue の 1 ページ (リポジトリ横断、既定トラッカー)。
-/// Issue 起点フローのトップレベル。main や孤児 worktree の概念はリポジトリ
-/// 単位のものなので、ここには出ない。active はセッションの有無 (worktree の
+/// repo-group に属する open な Issue の 1 ページ (リポジトリ横断)。
+/// Issue 起点フローのトップレベル。--tracker でグループを持つインスタンスを
+/// 指定する (省略時は既定)。main や孤児 worktree の概念はリポジトリ単位の
+/// ものなので、ここには出ない。active はセッションの有無 (worktree の
 /// 検査はリポジトリごとのクローンが要るため、ここでは行わない)。
-pub fn list_group_issues(home: &Path, group: &str, cursor: Option<String>) -> CmdResult {
+pub fn list_group_issues(
+    home: &Path,
+    group: &str,
+    tracker_name: Option<String>,
+    cursor: Option<String>,
+) -> CmdResult {
     let trackers = settings::trackers(home)?;
-    let plugin = trackers.default_plugin()?;
+    let plugin = trackers.named_or_default(tracker_name.as_deref())?;
     let managers = settings::session_managers(home);
     let (issues, next_cursor) = tracker::group_issues(plugin, group, cursor.as_deref());
 
@@ -67,18 +95,19 @@ pub fn list_trackers(home: &Path) -> CmdResult {
     let default = trackers.default_name().map(str::to_owned);
     Ok(Value::Array(
         trackers
-            .entries()
-            .map(|(name, path)| {
-                let installed = crate::infra::exec::is_executable(path);
+            .all()
+            .into_iter()
+            .map(|t| {
+                let installed = crate::infra::exec::is_executable(t.path());
                 let (ready, diagnosis, protocol) = installed
-                    .then(|| tracker::info(path))
+                    .then(|| tracker::info(t))
                     .flatten()
                     .map(|(ready, diagnosis, protocol)| (Some(ready), diagnosis, protocol))
                     .unwrap_or((None, None, None));
                 json!({
-                    "name": name,
-                    "path": path.to_string_lossy(),
-                    "default": Some(name) == default.as_deref(),
+                    "name": t.name(),
+                    "path": t.path().to_string_lossy(),
+                    "default": Some(t.name()) == default.as_deref(),
                     "installed": installed,
                     "ready": ready,
                     "diagnosis": diagnosis,
@@ -101,7 +130,7 @@ pub fn list_session_managers(home: &Path) -> CmdResult {
     ))
 }
 
-pub fn list_repos(home: &Path, group: Option<String>) -> CmdResult {
+pub fn list_repos(home: &Path, group: Option<String>, tracker_name: Option<String>) -> CmdResult {
     let group = group.unwrap_or_default();
 
     let repos: Vec<RepoEntry> = if group.is_empty() || group == "none" {
@@ -109,11 +138,13 @@ pub fn list_repos(home: &Path, group: Option<String>) -> CmdResult {
         entries.sort_by_key(|entry| entry.repo.ns_repo());
         entries
     } else {
-        // Tracker (repo-group 所属) と RepoStore (ローカルにある) の交差
+        // Tracker (repo-group 所属) と RepoStore (ローカルにある) の交差。
+        // --tracker はグループを持つインスタンス (省略時は既定)
         let group = validated("group", group, domain::is_valid_group)?;
-        let plugin = settings::trackers(home)?.default_plugin()?.to_owned();
+        let trackers = settings::trackers(home)?;
+        let plugin = trackers.named_or_default(tracker_name.as_deref())?;
         let entries = repostore::entries(home)?;
-        tracker::repo_group_repos(&plugin, &group)
+        tracker::repo_group_repos(plugin, &group)
             .iter()
             .filter_map(|name| RepoRef::parse(name))
             .filter_map(|repo| entries.iter().find(|entry| entry.repo == repo))
@@ -140,7 +171,7 @@ pub fn list_workspaces(home: &Path) -> CmdResult {
     let mut rows = Vec::new();
     for entry in repostore::entries(home)? {
         let repo = &entry.repo;
-        let plugin = trackers.plugin_for(entry.tracker.as_deref())?;
+        let plugin = trackers.for_repo(&entry)?;
         let main_entry = session::workspace_session_exists(repo, &WorkspaceId::Main, &managers)
             .then(|| {
                 json!({
@@ -159,7 +190,7 @@ pub fn list_workspaces(home: &Path) -> CmdResult {
                     &managers,
                 );
                 let (title, closed) = plugin
-                    .and_then(|bin| tracker::issue(bin, repo, &id))
+                    .and_then(|t| tracker::issue(t, repo, &id))
                     .unwrap_or_else(|| ("unknown".to_owned(), false));
                 json!({
                     "ns_repo": repo.ns_repo(), "id": id, "title": title,
@@ -183,12 +214,12 @@ pub fn list_issues(
     let entry = repostore::lookup(home, repo)?;
     let paths = paths(home);
     let managers = settings::session_managers(home);
-    let plugin = settings::trackers(home)?.plugin_for(entry.tracker.as_deref())?.map(Path::to_owned);
+    let trackers = settings::trackers(home)?;
+    let plugin = trackers.for_repo(&entry)?;
 
     let active_ids = active_issue_ids(&paths, &entry, &managers);
     let (open_issues, next_cursor) = plugin
-        .as_deref()
-        .map(|bin| tracker::open_issues(bin, repo, parent.as_deref(), cursor.as_deref()))
+        .map(|t| tracker::open_issues(t, repo, parent.as_deref(), cursor.as_deref()))
         .unwrap_or_else(|| (Vec::new(), None));
 
     let ns_repo = repo.ns_repo();
@@ -241,8 +272,7 @@ pub fn list_issues(
         .filter(|id| !open_ids.contains(id.as_str()))
         .map(|id| {
             let (title, closed) = plugin
-                .as_deref()
-                .and_then(|bin| tracker::issue(bin, repo, id))
+                .and_then(|t| tracker::issue(t, repo, id))
                 .unwrap_or_else(|| ("unknown".to_owned(), true));
             issue_entry(id, &title, &ns_repo, true, closed, devcontainer::state(repo, id), false)
         });

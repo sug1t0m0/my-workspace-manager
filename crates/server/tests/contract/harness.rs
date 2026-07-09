@@ -17,14 +17,17 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
-const FAKE_COMMANDS: &[&str] = &["ghq", "git", "tmux", "herdr", "docker", "devcontainer", "tracker"];
+const FAKE_COMMANDS: &[&str] =
+    &["ghq", "git", "tmux", "herdr", "docker", "devcontainer", "tracker", "tracker2"];
 
 const FAKE_SCRIPT: &str = r#"#!/bin/sh
 # 汎用フェイク: 呼び出しを 1 行でログに記録し、パターン表の最初の一致で応答する。
-# HERDR_SOCKET_PATH はセッションのターゲット指定に使われる契約の一部なので、
-# 設定されていればログ行の先頭に含める。.once マーカー付きのスタブは一度
-# 一致したら消える (呼び出しごとに応答が変わる状況の再現用)。
+# HERDR_SOCKET_PATH (セッションターゲット) と WSM_TRACKER_* (トラッカー
+# インスタンスの拡張キー。常に付く WSM_TRACKER_NAME は除く) は契約の一部
+# なので、設定されていればログ行の先頭に含める (名前順)。.once マーカー付きの
+# スタブは一度一致したら消える (呼び出しごとに応答が変わる状況の再現用)。
 line="$(basename "$0") $(printf '%s' "$*" | tr '\n' ' ')"
+for kv in $(env | grep '^WSM_TRACKER_' | grep -v '^WSM_TRACKER_NAME=' | sort -r); do line="$kv $line"; done
 [ -n "${HERDR_SOCKET_PATH:-}" ] && line="HERDR_SOCKET_PATH=$HERDR_SOCKET_PATH $line"
 printf '%s\n' "$line" >> "$WSM_TEST_LOG"
 for p in "$WSM_TEST_RESPONSES"/*.pattern; do

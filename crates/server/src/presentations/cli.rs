@@ -32,9 +32,11 @@ fn run(args: &[String]) -> CmdResult {
         "list-repo-groups" => usecases::list_repo_groups(&home),
         "list-group-issues" => {
             let group = required_group(rest)?;
-            usecases::list_group_issues(&home, &group, optional_cursor(rest)?)
+            usecases::list_group_issues(&home, &group, optional_tracker(rest)?, optional_cursor(rest)?)
         }
-        "list-repos" => usecases::list_repos(&home, flag_value(rest, "--group")),
+        "list-repos" => {
+            usecases::list_repos(&home, flag_value(rest, "--group"), optional_tracker(rest)?)
+        }
         "list-issues" => usecases::list_issues(
             &home,
             &required_repo(rest)?,
@@ -110,6 +112,15 @@ fn optional_parent(args: &[String]) -> Result<Option<String>, String> {
         None => Ok(None),
         Some(value) if value != "main" && domain::is_valid_issue(&value) => Ok(Some(value)),
         Some(value) => Err(format!("Invalid parent: {value}")),
+    }
+}
+
+/// --tracker (任意) の検証。トラッカーのインスタンス名。
+fn optional_tracker(args: &[String]) -> Result<Option<String>, String> {
+    match flag_value(args, "--tracker") {
+        None => Ok(None),
+        Some(value) if domain::is_valid_user(&value) => Ok(Some(value)),
+        Some(value) => Err(format!("Invalid tracker: {value}")),
     }
 }
 

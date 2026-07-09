@@ -60,8 +60,8 @@ fn list_repo_groups_returns_open_groups_as_array() {
     assert_eq!(
         out.stdout_json(),
         json!([
-            { "id": "1", "title": "Roadmap" },
-            { "id": "3", "title": "Backlog" },
+            { "id": "1", "title": "Roadmap", "tracker": "fake" },
+            { "id": "3", "title": "Backlog", "tracker": "fake" },
         ])
     );
 }
@@ -110,7 +110,7 @@ fn list_repo_groups_drops_items_with_invalid_ids() {
 
     // Assert
     assert_eq!(out.status, Some(0));
-    assert_eq!(out.stdout_json(), json!([{ "id": "1", "title": "Ok" }]));
+    assert_eq!(out.stdout_json(), json!([{ "id": "1", "title": "Ok", "tracker": "fake" }]));
 }
 
 // --- 入力検証 ---
@@ -236,7 +236,7 @@ fn list_repo_groups_preserves_backslashes_in_titles() {
 
     // Assert
     assert_eq!(out.status, Some(0));
-    assert_eq!(out.stdout_json(), json!([{ "id": "1", "title": "Group \\ A" }]));
+    assert_eq!(out.stdout_json(), json!([{ "id": "1", "title": "Group \\ A", "tracker": "fake" }]));
 }
 
 // --- list-repos ---
@@ -446,6 +446,159 @@ fn invalid_repo_entry_in_config_fails_loudly() {
     // Assert
     assert_eq!(out.status, Some(1));
     assert_eq!(out.stderr_json(), json!({ "error": "[[repo]] requires ns in config.toml" }));
+}
+
+// --- Tracker のインスタンス分割 (拡張キー / ns マッピング / グループ集約) ---
+
+/// 2 インスタンス構成の設定 (fake = 既定、other = tracker2 のフェイク)。
+fn two_trackers_config(env: &TestEnv, other_extra: &str) -> String {
+    format!(
+        "{}{}[[tracker]]\nname = \"other\"\npath = \"{}/tracker2\"\n{}",
+        env.managers_config(&["tmux", "herdr"]),
+        env.tracker_config(),
+        env.fakes_dir_str(),
+        other_extra
+    )
+}
+
+#[test]
+fn tracker_extension_keys_are_passed_as_env() {
+    // Arrange: 予約キー以外の owner はプラグインに WSM_TRACKER_OWNER として渡る
+    let env = TestEnv::new();
+    let config = format!(
+        "{}{}owner = \"acme-corp\"\n",
+        env.managers_config(&["tmux", "herdr"]),
+        env.tracker_config()
+    );
+    env.write_home(".config/wsm/config.toml", &config).stub(
+        "^WSM_TRACKER_OWNER=acme-corp tracker list-repo-groups-v0$",
+        r#"[{"id":"1","title":"Org Board"}]"#,
+    );
+
+    // Act
+    let out = env.run(&["list-repo-groups"]);
+
+    // Assert: env 付きのパターンにだけ一致している = 渡っている
+    assert_eq!(out.status, Some(0));
+    assert_eq!(out.stdout_json(), json!([{ "id": "1", "title": "Org Board", "tracker": "fake" }]));
+}
+
+#[test]
+fn ns_mapping_routes_repos_to_their_tracker() {
+    // Arrange: owner ns は other トラッカーの世界。明示 (repo.tracker) なしでも
+    // ns マッピングで tracker2 に照会が行く
+    let env = TestEnv::new();
+    env.write_home(".config/wsm/config.toml", &two_trackers_config(&env, "ns = \"owner\"\n"))
+        .stub("^docker ps -a", "")
+        .stub(
+            "^tracker2 list-issues-v2 --repo owner/repo$",
+            r#"{"issues":[{"id":"42","title":"Org task"}],"next_cursor":null}"#,
+        );
+
+    // Act
+    let out = env.run(&["list-issues", "--repo", "owner/repo"]);
+
+    // Assert
+    assert_eq!(out.status, Some(0));
+    assert_eq!(out.stdout_json()["issues"][1]["title"], "Org task");
+    assert!(
+        !env.invocations().iter().any(|l| l.starts_with("tracker ")),
+        "default tracker must not be asked: {:?}",
+        env.invocations()
+    );
+}
+
+#[test]
+fn duplicate_ns_mapping_is_a_config_error() {
+    // Arrange: 同じ ns を 2 つのトラッカーが主張 (どちらの世界か決められない)
+    let env = TestEnv::new();
+    let config = format!(
+        "{}{}ns = \"acme\"\n[[tracker]]\nname = \"other\"\npath = \"{}/tracker2\"\nns = \"acme\"\n",
+        env.managers_config(&["tmux", "herdr"]),
+        env.tracker_config(),
+        env.fakes_dir_str()
+    );
+    env.write_home(".config/wsm/config.toml", &config);
+
+    // Act
+    let out = env.run(&["list-repo-groups"]);
+
+    // Assert
+    assert_eq!(out.status, Some(1));
+    assert_eq!(
+        out.stderr_json(),
+        json!({ "error": "ns mapped to multiple trackers: acme (fake, other)" })
+    );
+}
+
+#[test]
+fn repo_groups_aggregate_all_trackers_with_default_first() {
+    // Arrange: 2 インスタンス。default_tracker で other を既定にする
+    // (トップレベルキーはテーブルより前に置く — 後ろに置くとテーブルの
+    // 拡張キーとして解釈される)
+    let env = TestEnv::new();
+    let config = format!(
+        "{}default_tracker = \"other\"\n{}[[tracker]]\nname = \"other\"\npath = \"{}/tracker2\"\n",
+        env.managers_config(&["tmux", "herdr"]),
+        env.tracker_config(),
+        env.fakes_dir_str()
+    );
+    env.write_home(".config/wsm/config.toml", &config)
+        .stub("^tracker list-repo-groups-v0$", r#"[{"id":"1","title":"Personal"}]"#)
+        .stub("^tracker2 list-repo-groups-v0$", r#"[{"id":"7","title":"Org Board"}]"#);
+
+    // Act
+    let out = env.run(&["list-repo-groups"]);
+
+    // Assert: 既定 (other) のグループが先。各グループが tracker を名乗る
+    assert_eq!(out.status, Some(0));
+    assert_eq!(
+        out.stdout_json(),
+        json!([
+            { "id": "7", "title": "Org Board", "tracker": "other" },
+            { "id": "1", "title": "Personal", "tracker": "fake" },
+        ])
+    );
+}
+
+#[test]
+fn repo_groups_survive_one_broken_tracker() {
+    // Arrange: fake は応答するが other は壊れている (未スタブ → 非ゼロ)。
+    // 縮退の単位はトラッカーごと
+    let env = TestEnv::new();
+    env.write_home(".config/wsm/config.toml", &two_trackers_config(&env, ""))
+        .stub("^tracker list-repo-groups-v0$", r#"[{"id":"1","title":"Personal"}]"#);
+
+    // Act
+    let out = env.run(&["list-repo-groups"]);
+
+    // Assert
+    assert_eq!(out.status, Some(0));
+    assert_eq!(out.stdout_json(), json!([{ "id": "1", "title": "Personal", "tracker": "fake" }]));
+}
+
+#[test]
+fn group_issues_route_to_the_named_tracker() {
+    // Arrange: --tracker でグループを持つインスタンスを指定する
+    let env = TestEnv::new();
+    env.write_home(".config/wsm/config.toml", &two_trackers_config(&env, ""))
+        .stub("^docker ps -a", "")
+        .stub(
+            "^tracker2 list-group-issues-v0 --group 7$",
+            r#"{"issues":[{"id":"9","title":"Org task","repo":"acme/api"}],"next_cursor":null}"#,
+        );
+
+    // Act
+    let out = env.run(&["list-group-issues", "--group", "7", "--tracker", "other"]);
+
+    // Assert
+    assert_eq!(out.status, Some(0));
+    assert_eq!(out.stdout_json()["issues"][0]["repo"], "acme/api");
+    assert!(
+        !env.invocations().iter().any(|l| l.starts_with("tracker ")),
+        "only the named tracker must be asked: {:?}",
+        env.invocations()
+    );
 }
 
 // --- Tracker プラグインの選択と検証 ---

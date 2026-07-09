@@ -9,18 +9,22 @@
 //! Docker ラベルに流れ込むため形を検証し、違反する要素は捨てる。
 
 use crate::infra::exec;
+use crate::infra::settings::Tracker;
 use serde_json::Value;
-use std::path::Path;
 use wsm_shared::domains::{self as domain, RepoRef};
 
-fn call(bin: &Path, args: &[&str]) -> Option<Value> {
-    exec::stdout_if_ok(bin, args).and_then(|out| serde_json::from_str(&out).ok())
+/// プラグインをインスタンスの環境変数 (WSM_TRACKER_NAME + 拡張キー) 付きで起動する。
+fn call(tracker: &Tracker, args: &[&str]) -> Option<Value> {
+    let envs: Vec<(&str, &str)> =
+        tracker.env().iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    exec::stdout_if_ok_env(tracker.path(), args, &envs)
+        .and_then(|out| serde_json::from_str(&out).ok())
 }
 
 /// open な repo-group (リポジトリのグルーピング) の {id, title} の列。
 /// 取得できなければ空。
-pub fn repo_groups(bin: &Path) -> Vec<Value> {
-    call(bin, &["list-repo-groups-v0"])
+pub fn repo_groups(tracker: &Tracker) -> Vec<Value> {
+    call(tracker, &["list-repo-groups-v0"])
         .and_then(|v| v.as_array().cloned())
         .map(|items| items.into_iter().filter(valid_group).collect())
         .unwrap_or_default()
@@ -31,8 +35,8 @@ fn valid_group(item: &Value) -> bool {
 }
 
 /// repo-group に属するリポジトリの ns_repo 一覧。取得できなければ空。
-pub fn repo_group_repos(bin: &Path, group: &str) -> Vec<String> {
-    call(bin, &["repo-group-repos-v0", "--group", group])
+pub fn repo_group_repos(tracker: &Tracker, group: &str) -> Vec<String> {
+    call(tracker, &["repo-group-repos-v0", "--group", group])
         .and_then(|v| v.as_array().cloned())
         .map(|items| {
             items
@@ -64,7 +68,7 @@ pub struct IssueItem {
 /// フォールバックは空。cursor はプラグインの出力から引数へ還流するため、
 /// 形の不正なものは「続きなし」に落とす。
 pub fn open_issues(
-    bin: &Path,
+    tracker: &Tracker,
     repo: &RepoRef,
     parent: Option<&str>,
     cursor: Option<&str>,
@@ -77,7 +81,7 @@ pub fn open_issues(
     if let Some(cursor) = cursor {
         args.extend(["--cursor", cursor]);
     }
-    if let Some(page) = call(bin, &args) {
+    if let Some(page) = call(tracker, &args) {
         if let Some(items) = page["issues"].as_array() {
             return (issue_items(items, true), next_cursor_of(&page));
         }
@@ -90,14 +94,14 @@ pub fn open_issues(
     if let Some(parent) = parent {
         args.extend(["--parent", parent]);
     }
-    if let Some(items) = call(bin, &args).and_then(|v| v.as_array().cloned()) {
+    if let Some(items) = call(tracker, &args).and_then(|v| v.as_array().cloned()) {
         return (issue_items(&items, true), None);
     }
     if parent.is_some() {
         return (Vec::new(), None);
     }
 
-    let items = call(bin, &["list-issues-v0", "--repo", &ns_repo])
+    let items = call(tracker, &["list-issues-v0", "--repo", &ns_repo])
         .and_then(|v| v.as_array().cloned())
         .map(|items| issue_items(&items, false))
         .unwrap_or_default();
@@ -109,7 +113,7 @@ pub fn open_issues(
 /// 非対応プラグイン (未知の動詞 → 非ゼロ) は空 (UI は従来のリポジトリ起点
 /// フローに落ちる)。
 pub fn group_issues(
-    bin: &Path,
+    tracker: &Tracker,
     group: &str,
     cursor: Option<&str>,
 ) -> (Vec<IssueItem>, Option<String>) {
@@ -117,7 +121,7 @@ pub fn group_issues(
     if let Some(cursor) = cursor {
         args.extend(["--cursor", cursor]);
     }
-    let Some(page) = call(bin, &args) else { return (Vec::new(), None) };
+    let Some(page) = call(tracker, &args) else { return (Vec::new(), None) };
     let Some(items) = page["issues"].as_array() else { return (Vec::new(), None) };
     let issues = issue_items(items, true).into_iter().filter(|i| i.repo.is_some()).collect();
     (issues, next_cursor_of(&page))
@@ -154,8 +158,8 @@ fn issue_items(items: &[Value], hierarchical: bool) -> Vec<IssueItem> {
 }
 
 /// 単一 Issue の (タイトル, closed か)。取得できなければ None。
-pub fn issue(bin: &Path, repo: &RepoRef, id: &str) -> Option<(String, bool)> {
-    let v = call(bin, &["issue-v0", "--repo", &repo.ns_repo(), "--id", id])?;
+pub fn issue(tracker: &Tracker, repo: &RepoRef, id: &str) -> Option<(String, bool)> {
+    let v = call(tracker, &["issue-v0", "--repo", &repo.ns_repo(), "--id", id])?;
     let title = v["title"].as_str()?.to_owned();
     let closed = match v["state"].as_str()? {
         "closed" => true,
@@ -173,8 +177,8 @@ fn valid_issue_id(id: &str) -> bool {
 
 /// プラグインの自己診断 (info-v0)。形を検証したフィールドだけを通す:
 /// (ready, diagnosis, protocol)。info-v0 非対応・出力不正は None。
-pub fn info(bin: &Path) -> Option<(bool, Option<String>, Option<Vec<String>>)> {
-    let v = call(bin, &["info-v0"])?;
+pub fn info(tracker: &Tracker) -> Option<(bool, Option<String>, Option<Vec<String>>)> {
+    let v = call(tracker, &["info-v0"])?;
     let ready = v["ready"].as_bool()?;
     let diagnosis = v["diagnosis"].as_str().map(str::to_owned);
     let protocol = v["protocol"].as_array().map(|verbs| {

@@ -141,10 +141,7 @@ pub fn default_devcontainer_config(home: &Path) -> Option<PathBuf> {
 /// ```
 pub fn custom_repos(home: &Path) -> Result<Vec<RepoEntry>, String> {
     let content = std::fs::read_to_string(config_file(home)).unwrap_or_default();
-    table_sections(&content, "repo", &["path", "host", "ns", "name", "tracker"])
-        .iter()
-        .map(|section| repo_entry(home, section))
-        .collect()
+    table_sections(&content, "repo").iter().map(|section| repo_entry(home, section)).collect()
 }
 
 /// 必須キーの検証と RepoEntry への変換。設定の誤りは黙って捨てず
@@ -175,81 +172,172 @@ fn repo_entry(home: &Path, section: &[(String, String)]) -> Result<RepoEntry, St
     Ok(RepoEntry { repo, host, clone_path, tracker })
 }
 
+/// 設定された Tracker プラグインの 1 インスタンス。同じバイナリ (path) を
+/// 別名・別設定で複数登録できる (例: 個人用と organization 用)。
+///
+/// - 予約キー (`name` / `path` / `ns`) 以外の `key = "value"` は、起動時に
+///   環境変数 `WSM_TRACKER_<KEY大文字>` としてプラグインに渡る。wsm は値の
+///   意味を知らない (トラッカー固有の設定はプラグインの責務、の具体化)。
+///   `WSM_TRACKER_NAME` (インスタンス名) は常に渡る
+/// - `ns` (カンマ区切り) は、その namespace のリポジトリの既定トラッカーに
+///   なる (GitHub では ns = owner)
+pub struct Tracker {
+    name: String,
+    path: PathBuf,
+    ns: Vec<String>,
+    env: Vec<(String, String)>,
+}
+
+impl Tracker {
+    pub fn name(&self) -> &str {
+        &self.name
+    }
+
+    pub fn path(&self) -> &Path {
+        &self.path
+    }
+
+    /// プラグイン起動時に渡す環境変数 (WSM_TRACKER_NAME + 拡張キー)。
+    pub fn env(&self) -> &[(String, String)] {
+        &self.env
+    }
+}
+
 /// 設定された Tracker プラグインの列 (`[[tracker]]` テーブル)。
 /// マネージャーと同じ規則: 列挙したものだけが存在し、フォールバックはない。
 /// 既定は `default_tracker` で明示し、未指定なら列挙の先頭。
 pub struct Trackers {
-    entries: Vec<(String, PathBuf)>,
+    entries: Vec<Tracker>,
     default: Option<String>,
 }
 
 impl Trackers {
-    /// 設定順の (name, path) の列 (list-trackers 用)。
-    pub fn entries(&self) -> impl Iterator<Item = (&str, &Path)> {
-        self.entries.iter().map(|(name, path)| (name.as_str(), path.as_path()))
+    /// 既定を先頭にした全インスタンス (グループ集約・list-trackers 用)。
+    pub fn all(&self) -> Vec<&Tracker> {
+        let default = self.default_name();
+        let mut ordered: Vec<&Tracker> =
+            self.entries.iter().filter(|t| Some(t.name.as_str()) == default).collect();
+        ordered.extend(self.entries.iter().filter(|t| Some(t.name.as_str()) != default));
+        ordered
     }
 
     /// 既定トラッカー名 (default_tracker > 列挙の先頭)。
     pub fn default_name(&self) -> Option<&str> {
-        self.default.as_deref().or(self.entries.first().map(|(n, _)| n.as_str()))
+        self.default.as_deref().or(self.entries.first().map(|t| t.name.as_str()))
     }
 
-    /// 既定トラッカーのプラグイン (プロジェクト照会などリポジトリ非依存の
-    /// 呼び出しに使う)。未設定は設定誤りとして表面化させる。
-    pub fn default_plugin(&self) -> Result<&Path, String> {
-        self.plugin_of(
+    /// 既定トラッカー。未設定は設定誤りとして表面化させる。
+    pub fn default_tracker(&self) -> Result<&Tracker, String> {
+        self.named(
             self.default_name().ok_or("no tracker configured (add [[tracker]] to config.toml)")?,
         )
     }
 
-    /// リポジトリの選択 (RepoEntry.tracker) からプラグインを解決する。
-    /// 名前指定が列挙にないのは設定誤りでエラー。無指定はトラッカーが
-    /// 全く設定されていなければ None (照会は縮退する)。
-    pub fn plugin_for(&self, tracker: Option<&str>) -> Result<Option<&Path>, String> {
-        match tracker {
-            Some(name) => self.plugin_of(name).map(Some),
-            None if self.entries.is_empty() => Ok(None),
-            None => self.default_plugin().map(Some),
+    /// 名前からインスタンスを解決する。列挙にないのは設定誤りでエラー。
+    pub fn named(&self, name: &str) -> Result<&Tracker, String> {
+        self.entries
+            .iter()
+            .find(|t| t.name == name)
+            .ok_or_else(|| format!("tracker not configured: {name}"))
+    }
+
+    /// 名前指定 (任意) からインスタンスを解決する。無指定は既定。
+    pub fn named_or_default(&self, name: Option<&str>) -> Result<&Tracker, String> {
+        match name {
+            Some(name) => self.named(name),
+            None => self.default_tracker(),
         }
     }
 
-    fn plugin_of(&self, name: &str) -> Result<&Path, String> {
-        self.entries
-            .iter()
-            .find(|(n, _)| n == name)
-            .map(|(_, path)| path.as_path())
-            .ok_or_else(|| format!("tracker not configured: {name}"))
+    /// リポジトリのトラッカー解決。優先順位:
+    /// [[repo]].tracker (明示) > ns マッピング > 既定。
+    /// トラッカーが全く設定されていなければ None (照会は縮退する)。
+    pub fn for_repo(&self, entry: &RepoEntry) -> Result<Option<&Tracker>, String> {
+        if let Some(name) = entry.tracker.as_deref() {
+            return self.named(name).map(Some);
+        }
+        if let Some(tracker) =
+            self.entries.iter().find(|t| t.ns.iter().any(|ns| ns == entry.repo.ns()))
+        {
+            return Ok(Some(tracker));
+        }
+        if self.entries.is_empty() {
+            return Ok(None);
+        }
+        self.default_tracker().map(Some)
     }
 }
 
 /// config.toml から [[tracker]] と default_tracker を読む。
 pub fn trackers(home: &Path) -> Result<Trackers, String> {
     let content = std::fs::read_to_string(config_file(home)).unwrap_or_default();
-    let entries = table_sections(&content, "tracker", &["name", "path"])
+    let entries = table_sections(&content, "tracker")
         .iter()
-        .map(|section| {
-            let name =
-                table_value(section, "name").ok_or("[[tracker]] requires name in config.toml")?;
-            let path =
-                table_value(section, "path").ok_or("[[tracker]] requires path in config.toml")?;
-            if !domain::is_valid_user(&name) {
-                return Err(format!("Invalid tracker name: {name}"));
+        .map(|section| tracker_entry(home, section))
+        .collect::<Result<Vec<Tracker>, String>>()?;
+
+    // ns の割り当ては一意であること (同じ ns を 2 つのトラッカーが主張したら
+    // どちらの世界か決められない)
+    for (i, a) in entries.iter().enumerate() {
+        for b in &entries[i + 1..] {
+            if let Some(ns) = a.ns.iter().find(|ns| b.ns.contains(ns)) {
+                return Err(format!(
+                    "ns mapped to multiple trackers: {ns} ({}, {})",
+                    a.name, b.name
+                ));
             }
-            Ok((name, expand_tilde(home, path)))
-        })
-        .collect::<Result<Vec<_>, String>>()?;
+        }
+    }
+
     let default = config_value(home, "default_tracker");
     if let Some(name) = &default {
-        if !entries.iter().any(|(n, _)| n == name) {
+        if !entries.iter().any(|t| &t.name == name) {
             return Err(format!("tracker not configured: {name}"));
         }
     }
     Ok(Trackers { entries, default })
 }
 
+fn tracker_entry(home: &Path, section: &[(String, String)]) -> Result<Tracker, String> {
+    let name = table_value(section, "name").ok_or("[[tracker]] requires name in config.toml")?;
+    let path = table_value(section, "path").ok_or("[[tracker]] requires path in config.toml")?;
+    if !domain::is_valid_user(&name) {
+        return Err(format!("Invalid tracker name: {name}"));
+    }
+    let ns = match table_value(section, "ns") {
+        None => Vec::new(),
+        Some(raw) => raw
+            .split(',')
+            .map(str::trim)
+            .filter(|ns| !ns.is_empty())
+            .map(|ns| {
+                domain::is_valid_user(ns)
+                    .then(|| ns.to_owned())
+                    .ok_or_else(|| format!("Invalid tracker ns: {ns}"))
+            })
+            .collect::<Result<Vec<_>, String>>()?,
+    };
+
+    // 予約キー以外はプラグインへの環境変数 (同名キーの重複は後勝ち)
+    let mut env: Vec<(String, String)> = vec![("WSM_TRACKER_NAME".to_owned(), name.clone())];
+    for (key, value) in section {
+        if matches!(key.as_str(), "name" | "path" | "ns") {
+            continue;
+        }
+        let var = format!("WSM_TRACKER_{}", key.to_uppercase());
+        match env.iter_mut().find(|(existing, _)| existing == &var) {
+            Some((_, existing)) => *existing = value.clone(),
+            None => env.push((var, value.clone())),
+        }
+    }
+
+    Ok(Tracker { name, path: expand_tilde(home, path), ns, env })
+}
+
 /// `[[<header>]]` テーブルの列を、テーブルごとの (key, value) の対に読む。
-/// 対象キーのみ拾い、別のセクションヘッダでテーブルは終わる。
-fn table_sections(content: &str, header: &str, keys: &[&str]) -> Vec<Vec<(String, String)>> {
+/// キーは限定しない (トラッカーの拡張キーを許すため)。別のセクション
+/// ヘッダでテーブルは終わる。
+fn table_sections(content: &str, header: &str) -> Vec<Vec<(String, String)>> {
     let marker = format!("[[{header}]]");
     let mut sections: Vec<Vec<(String, String)>> = Vec::new();
     let mut current: Option<Vec<(String, String)>> = None;
@@ -261,15 +349,28 @@ fn table_sections(content: &str, header: &str, keys: &[&str]) -> Vec<Vec<(String
         } else if trimmed.starts_with('[') {
             sections.extend(current.take());
         } else if let Some(section) = current.as_mut() {
-            for key in keys {
-                if let Some(value) = parse_config_line(trimmed, key) {
-                    section.push(((*key).to_owned(), value));
-                }
+            if let Some(pair) = parse_table_line(trimmed) {
+                section.push(pair);
             }
         }
     }
     sections.extend(current.take());
     sections
+}
+
+/// テーブル内の `key = "value"` を分解する。キーは英小文字始まりの
+/// 英小文字・数字・`_` のみ (環境変数名に安全に写せる形)。
+fn parse_table_line(line: &str) -> Option<(String, String)> {
+    let (key, rest) = line.split_once('=')?;
+    let key = key.trim();
+    let mut chars = key.chars();
+    let valid_key = chars.next().is_some_and(|c| c.is_ascii_lowercase())
+        && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_');
+    if !valid_key {
+        return None;
+    }
+    let rest = rest.trim_start().strip_prefix('"')?;
+    rest.split_once('"').map(|(value, _)| (key.to_owned(), value.to_owned()))
 }
 
 /// テーブル内のキーの値 (同名キーの重複は後勝ち)。

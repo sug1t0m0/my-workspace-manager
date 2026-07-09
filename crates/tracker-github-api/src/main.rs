@@ -347,11 +347,15 @@ fn api_url() -> String {
         .unwrap_or_else(|| "https://api.github.com".to_owned())
 }
 
-/// repo-group の owner。環境変数が優先、なければ認証ユーザー (viewer)。
+/// repo-group の owner。[[tracker]] の拡張キー `owner` (WSM_TRACKER_OWNER) が
+/// 最優先 (インスタンスごとに違う世界を向ける)。旧グローバル環境変数
+/// WSM_TRACKER_GITHUB_OWNER も後方互換で読む。なければ認証ユーザー (viewer)。
 fn owner() -> Result<String, String> {
-    if let Ok(owner) = std::env::var("WSM_TRACKER_GITHUB_OWNER") {
-        if !owner.is_empty() {
-            return Ok(owner);
+    for var in ["WSM_TRACKER_OWNER", "WSM_TRACKER_GITHUB_OWNER"] {
+        if let Ok(owner) = std::env::var(var) {
+            if !owner.is_empty() {
+                return Ok(owner);
+            }
         }
     }
     let data = graphql("query { viewer { login } }", json!({}))?;

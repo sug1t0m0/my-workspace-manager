@@ -165,26 +165,32 @@ _dc_indicator() {
   esac
 }
 
-# Step 1: repo-group 選択 (リポジトリのグルーピング。GitHub では Projects)
+# Step 1: repo-group 選択 (リポジトリのグルーピング。GitHub では Projects)。
+# server が全トラッカーを束ねて返すので、複数トラッカーのときだけ
+# インスタンス名を前置して世界を区別する。返り値は "tracker\tgroup_id"。
 _pick_repo_group() {
   local TAB=$'\t'
 
   local json=$(_server list-repo-groups)
   local items=()
 
-  local groups=$(printf '%s\n' "$json" | jq -r '.[] | "\(.id)\t\(.title)"')
+  local multi=$(printf '%s\n' "$json" | jq '[.[].tracker] | unique | length > 1')
+  local groups=$(printf '%s\n' "$json" | jq -r '.[] | "\(.tracker)\t\(.id)\t\(.title)"')
   if [[ -n "$groups" ]]; then
-    while IFS=$'\t' read -r id title; do
-      items+=("${id}${TAB}${title}")
+    local tracker id title
+    while IFS=$'\t' read -r tracker id title; do
+      local display=$title
+      [[ "$multi" == "true" ]] && display="(${tracker}) ${title}"
+      items+=("${tracker}${TAB}${id}${TAB}${display}")
     done <<< "$groups"
   fi
 
-  items+=("none${TAB}(グループなし: 全リポジトリ)")
+  items+=("-${TAB}none${TAB}(グループなし: 全リポジトリ)")
 
   local selected=$(printf '%s\n' "${items[@]}" \
-    | fzf --with-nth=2.. --delimiter=$'\t' --height=40% --reverse --prompt="Repo group> ")
+    | fzf --with-nth=3.. --delimiter=$'\t' --height=40% --reverse --prompt="Repo group> ")
   if [[ -n "$selected" ]]; then
-    printf '%s\n' "$selected" | cut -f1
+    printf '%s\n' "$selected" | cut -f1,2
   fi
 }
 
@@ -227,7 +233,7 @@ _pick_repo() {
 # (トラッカー非対応 or open Issue なし) のときは __fallback__ を返し、
 # 呼び出し側は従来のリポジトリ起点フローに落ちる。
 _pick_workspace() {
-  local mode=$1 arg=$2
+  local mode=$1 arg=$2 group_tracker=${3:-}
   local TAB=$'\t'
   local -a parents=()  # ドリルダウンの親スタック ("repo|id")
   local -a acc=()      # 現在の階層で読み込み済みの行
@@ -244,6 +250,7 @@ _pick_workspace() {
       elif [[ "$mode" == "group" ]]; then
         ctx_repo=""
         query=(list-group-issues --group "$arg")
+        [[ -n "$group_tracker" && "$group_tracker" != "-" ]] && query+=(--tracker "$group_tracker")
       else
         ctx_repo=$arg
         query=(list-issues --repo "$arg")
@@ -344,10 +351,12 @@ _pick_workspace() {
 # 同じ repo-group のローカルにあるリポジトリを代わりに選べる。
 # 候補が所属リポジトリしかなければ選択画面を出さずに確定する。
 _pick_work_repo() {
-  local group_id=$1 home_repo=$2
+  local group_id=$1 home_repo=$2 group_tracker=${3:-}
   local TAB=$'\t'
 
-  local json=$(_server list-repos --group "$group_id")
+  local -a query=(list-repos --group "$group_id")
+  [[ -n "$group_tracker" && "$group_tracker" != "-" ]] && query+=(--tracker "$group_tracker")
+  local json=$(_server "${query[@]}")
   local items=("${home_repo}${TAB}${home_repo}  (この Issue のリポジトリ)")
   local repo active_count
   while IFS=$'\t' read -r repo active_count; do
@@ -612,12 +621,14 @@ case "$cmd" in
       # 段階選択 (Issue 起点): repo-group → Issue → 作業リポジトリ → DevContainer。
       # 「グループなし」とグループの Issue 一覧が空のときは従来の
       # リポジトリ起点 (リポジトリ → Issue) に落ちる
-      group_id=$(_pick_repo_group)
-      [[ -z "$group_id" ]] && exit 0
+      group_sel=$(_pick_repo_group)
+      [[ -z "$group_sel" ]] && exit 0
+      group_tracker=${group_sel%%$'\t'*}
+      group_id=${group_sel#*$'\t'}
 
       selection=""
       if [[ "$group_id" != "none" ]]; then
-        selection=$(_pick_workspace group "$group_id")
+        selection=$(_pick_workspace group "$group_id" "$group_tracker")
         [[ -z "$selection" ]] && exit 0
       fi
 
@@ -634,7 +645,7 @@ case "$cmd" in
       else
         home_repo=${selection%%$'\t'*}
         issue_id=${selection#*$'\t'}
-        ns_repo=$(_pick_work_repo "$group_id" "$home_repo")
+        ns_repo=$(_pick_work_repo "$group_id" "$home_repo" "$group_tracker")
         [[ -z "$ns_repo" ]] && exit 0
         issue_id=$(_workspace_id_for "$home_repo" "$ns_repo" "$issue_id")
       fi
