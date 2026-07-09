@@ -9,7 +9,7 @@ use std::path::PathBuf;
 use std::process::ExitCode;
 use wsm_shared::domains::{self as domain, RepoRef, WorkspaceId};
 
-const USAGE: &str = "Usage: wsm-server <list-repo-groups|list-repos|list-issues|list-workspaces|list-devcontainer-configs|list-session-managers|list-trackers|open|remove>";
+const USAGE: &str = "Usage: wsm-server <list-repo-groups|list-group-issues|list-repos|list-issues|list-workspaces|list-devcontainer-configs|list-session-managers|list-trackers|open|remove>";
 
 pub fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
@@ -30,6 +30,10 @@ fn run(args: &[String]) -> CmdResult {
     let (subcmd, rest) = args.split_first().ok_or(USAGE)?;
     match subcmd.as_str() {
         "list-repo-groups" => usecases::list_repo_groups(&home),
+        "list-group-issues" => {
+            let group = required_group(rest)?;
+            usecases::list_group_issues(&home, &group, optional_cursor(rest)?)
+        }
         "list-repos" => usecases::list_repos(&home, flag_value(rest, "--group")),
         "list-issues" => usecases::list_issues(
             &home,
@@ -89,6 +93,14 @@ fn required_issue(args: &[String]) -> Result<WorkspaceId, String> {
     domain::is_valid_issue(&value)
         .then(|| WorkspaceId::parse(&value))
         .ok_or_else(|| format!("Invalid issue: {value}"))
+}
+
+/// --group をパースする (パース = 検証)。
+fn required_group(args: &[String]) -> Result<String, String> {
+    let value = flag_value(args, "--group").ok_or("--group required")?;
+    domain::is_valid_group(&value)
+        .then_some(value.clone())
+        .ok_or_else(|| format!("Invalid group: {value}"))
 }
 
 /// --parent (任意) の検証。Issue id の文法に加え、Workspace id 空間の

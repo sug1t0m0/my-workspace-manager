@@ -14,11 +14,12 @@ use serde_json::{json, Value};
 use std::process::{Command, ExitCode};
 use std::time::Duration;
 
-const USAGE: &str = "Usage: wsm-tracker-github-api <list-repo-groups-v0|repo-group-repos-v0|list-issues-v0|list-issues-v1|list-issues-v2|issue-v0|info-v0>";
+const USAGE: &str = "Usage: wsm-tracker-github-api <list-repo-groups-v0|repo-group-repos-v0|list-group-issues-v0|list-issues-v0|list-issues-v1|list-issues-v2|issue-v0|info-v0>";
 
 const PROTOCOL: &[&str] = &[
     "list-repo-groups-v0",
     "repo-group-repos-v0",
+    "list-group-issues-v0",
     "list-issues-v0",
     "list-issues-v1",
     "list-issues-v2",
@@ -60,6 +61,9 @@ fn run(args: &[String]) -> Result<Value, String> {
             optional_flag(rest, "--parent"),
             optional_flag(rest, "--cursor"),
         ),
+        "list-group-issues-v0" => {
+            list_group_issues(&flag(rest, "--group")?, optional_flag(rest, "--cursor"))
+        }
         "issue-v0" => issue(&flag(rest, "--repo")?, &flag(rest, "--id")?),
         "info-v0" => Ok(info()),
         _ => Err(USAGE.to_owned()),
@@ -133,6 +137,7 @@ fn list_issues_page(
             (nodes, next, true)
         }
         Some(parent) => {
+            // sub-issues はリポジトリ横断で張れるため、子には repo が付く
             let (nodes, next) = sub_issue_page(repo, &parent, cursor.as_deref())?;
             (nodes, next, false)
         }
@@ -147,6 +152,38 @@ fn list_issues_page(
             }
         })
         .filter_map(|n| issue_item(n, true))
+        .collect();
+    Ok(json!({ "issues": issues, "next_cursor": next_cursor }))
+}
+
+/// repo-group (= GitHub Project) に属する open な Issue の 1 ページ。
+/// Projects V2 の items はリポジトリ横断なので、各 Issue に repo を付けて返す。
+/// どの Issue を項目にするかは Project 側の運用に従う (親子での絞り込みはしない)。
+fn list_group_issues(group: &str, cursor: Option<String>) -> Result<Value, String> {
+    const QUERY: &str = "query($owner: String!, $num: Int!, $cursor: String) {
+      repositoryOwner(login: $owner) {
+        ... on User { projectV2(number: $num) { items(first: 50, after: $cursor) {
+          pageInfo { endCursor hasNextPage }
+          nodes { content { ... on Issue { number title state repository { nameWithOwner } subIssues(first: 50) { nodes { state } } } } }
+        } } }
+        ... on Organization { projectV2(number: $num) { items(first: 50, after: $cursor) {
+          pageInfo { endCursor hasNextPage }
+          nodes { content { ... on Issue { number title state repository { nameWithOwner } subIssues(first: 50) { nodes { state } } } } }
+        } } }
+      }
+    }";
+    let number = numeric(group, "group")?;
+    let owner = owner()?;
+    let data = graphql(
+        QUERY,
+        json!({ "owner": owner, "num": number, "cursor": cursor }),
+    )?;
+    let (nodes, next_cursor) = page(&data["repositoryOwner"]["projectV2"]["items"]);
+    let issues: Vec<Value> = nodes
+        .iter()
+        .map(|n| &n["content"])
+        .filter(|c| c["state"].as_str() == Some("OPEN"))
+        .filter_map(|c| issue_item(c, true))
         .collect();
     Ok(json!({ "issues": issues, "next_cursor": next_cursor }))
 }
@@ -228,7 +265,7 @@ fn sub_issue_page(
         issue(number: $number) {
           subIssues(first: 50, after: $cursor) {
             pageInfo { endCursor hasNextPage }
-            nodes { number title state subIssues(first: 50) { nodes { state } } }
+            nodes { number title state repository { nameWithOwner } subIssues(first: 50) { nodes { state } } }
           }
         }
       }
@@ -260,7 +297,13 @@ fn issue_item(node: &Value, hierarchical: bool) -> Option<Value> {
         && node["subIssues"]["nodes"].as_array().is_some_and(|children| {
             children.iter().any(|child| child["state"].as_str() == Some("OPEN"))
         });
-    Some(json!({ "id": number.to_string(), "title": title, "has_children": has_children }))
+    let mut item = json!({ "id": number.to_string(), "title": title, "has_children": has_children });
+    // 所属リポジトリが分かるノード (sub-issues の子・Project の item) には
+    // repo を付ける (クロスリポジトリの子を正しいリポジトリで開くため)
+    if let Some(repo) = node["repository"]["nameWithOwner"].as_str() {
+        item["repo"] = Value::from(repo);
+    }
+    Some(item)
 }
 
 fn graphql(query: &str, variables: Value) -> Result<Value, String> {

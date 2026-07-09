@@ -25,6 +25,40 @@ pub fn list_repo_groups(home: &Path) -> CmdResult {
     Ok(Value::Array(tracker::repo_groups(trackers.default_plugin()?)))
 }
 
+/// repo-group に属する open な Issue の 1 ページ (リポジトリ横断、既定トラッカー)。
+/// Issue 起点フローのトップレベル。main や孤児 worktree の概念はリポジトリ
+/// 単位のものなので、ここには出ない。active はセッションの有無 (worktree の
+/// 検査はリポジトリごとのクローンが要るため、ここでは行わない)。
+pub fn list_group_issues(home: &Path, group: &str, cursor: Option<String>) -> CmdResult {
+    let trackers = settings::trackers(home)?;
+    let plugin = trackers.default_plugin()?;
+    let managers = settings::session_managers(home);
+    let (issues, next_cursor) = tracker::group_issues(plugin, group, cursor.as_deref());
+
+    let rows: Vec<Value> = issues
+        .iter()
+        .filter_map(|item| {
+            let ns_repo = item.repo.as_deref()?;
+            let repo = RepoRef::parse(ns_repo)?;
+            let active = session::workspace_session_exists(
+                &repo,
+                &WorkspaceId::Issue(item.id.clone()),
+                &managers,
+            );
+            Some(issue_entry(
+                &item.id,
+                &item.title,
+                ns_repo,
+                active,
+                false,
+                devcontainer::state(&repo, &item.id),
+                item.has_children,
+            ))
+        })
+        .collect();
+    Ok(json!({ "issues": rows, "next_cursor": next_cursor }))
+}
+
 /// 設定されたトラッカーの一覧と診断 (wsm doctor 用)。設定順で、
 /// installed はプラグイン実行ファイルの存在、ready / diagnosis / protocol は
 /// info-v0 の自己診断 (非対応なら null)。
@@ -155,17 +189,28 @@ pub fn list_issues(
     let (open_issues, next_cursor) = plugin
         .as_deref()
         .map(|bin| tracker::open_issues(bin, repo, parent.as_deref(), cursor.as_deref()))
-        .unwrap_or_default();
+        .unwrap_or_else(|| (Vec::new(), None));
 
-    let issue_entries = open_issues.iter().map(|(id, title, has_children)| {
-        issue_entry(
-            id,
-            title,
-            active_ids.iter().any(|active| active == id),
-            false,
-            devcontainer::state(repo, id),
-            *has_children,
-        )
+    let ns_repo = repo.ns_repo();
+    let issue_entries = open_issues.iter().map(|item| {
+        // repo 省略時は照会したリポジトリ。よそのリポジトリの Issue (クロス
+        // リポジトリの子) は、そのリポジトリの文脈でセッション・コンテナを見る
+        let item_repo = item.repo.as_deref().unwrap_or(&ns_repo);
+        let (active, dc) = match item.repo.as_deref().and_then(|r| RepoRef::parse(r)) {
+            Some(foreign) if item_repo != ns_repo => (
+                session::workspace_session_exists(
+                    &foreign,
+                    &WorkspaceId::Issue(item.id.clone()),
+                    &managers,
+                ),
+                devcontainer::state(&foreign, &item.id).to_owned(),
+            ),
+            _ => (
+                active_ids.iter().any(|active| active == &item.id),
+                devcontainer::state(repo, &item.id).to_owned(),
+            ),
+        };
+        issue_entry(&item.id, &item.title, item_repo, active, false, &dc, item.has_children)
     });
 
     // main と孤児 worktree はトップレベルの最初のページにだけ出す
@@ -180,6 +225,7 @@ pub fn list_issues(
     let main_entry = issue_entry(
         "main",
         "main",
+        &ns_repo,
         session::workspace_session_exists(repo, &WorkspaceId::Main, &managers),
         false,
         devcontainer::state(repo, "main"),
@@ -189,7 +235,7 @@ pub fn list_issues(
     // 孤児 worktree: 最初のページに出てこないがセッションが残っている Issue。
     // closed とは限らない (open な子 Issue や後続ページの Issue もここに来る)
     // ため、closed は Tracker の実際の state で埋める
-    let open_ids: HashSet<&str> = open_issues.iter().map(|(id, _, _)| id.as_str()).collect();
+    let open_ids: HashSet<&str> = open_issues.iter().map(|item| item.id.as_str()).collect();
     let orphan_entries = active_ids
         .iter()
         .filter(|id| !open_ids.contains(id.as_str()))
@@ -198,7 +244,7 @@ pub fn list_issues(
                 .as_deref()
                 .and_then(|bin| tracker::issue(bin, repo, id))
                 .unwrap_or_else(|| ("unknown".to_owned(), true));
-            issue_entry(id, &title, true, closed, devcontainer::state(repo, id), false)
+            issue_entry(id, &title, &ns_repo, true, closed, devcontainer::state(repo, id), false)
         });
 
     Ok(json!({
@@ -350,13 +396,14 @@ fn active_count(paths: &domain::Paths, entry: &RepoEntry, managers: &settings::M
 fn issue_entry(
     id: &str,
     title: &str,
+    repo: &str,
     active: bool,
     closed: bool,
     dc: &str,
     has_children: bool,
 ) -> Value {
     json!({
-        "id": id, "title": title, "active": active, "closed": closed,
+        "id": id, "title": title, "repo": repo, "active": active, "closed": closed,
         "devcontainer": dc, "has_children": has_children,
     })
 }

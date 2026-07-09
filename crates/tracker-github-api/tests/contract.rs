@@ -185,12 +185,14 @@ fn list_issues_v1_top_level_filters_out_children() {
 
 #[test]
 fn list_issues_v1_with_parent_lists_open_children_only() {
-    // Arrange: closed な子は open 一覧に出さない
+    // Arrange: closed な子は open 一覧に出さない。子は所属リポジトリを名乗る
+    // (sub-issues はリポジトリ横断で張れるため)
     let server = ApiServer::serve(vec![(
         "",
         json!({ "data": { "repository": { "issue": { "subIssues": { "nodes": [
-            { "number": 110, "title": "Open child", "state": "OPEN", "subIssues": { "nodes": [{ "state": "OPEN" }] } },
-            { "number": 111, "title": "Done child", "state": "CLOSED", "subIssues": { "nodes": [] } },
+            { "number": 110, "title": "Open child", "state": "OPEN", "repository": { "nameWithOwner": "owner/repo" }, "subIssues": { "nodes": [{ "state": "OPEN" }] } },
+            { "number": 9, "title": "Cross-repo child", "state": "OPEN", "repository": { "nameWithOwner": "owner/lib" }, "subIssues": { "nodes": [] } },
+            { "number": 111, "title": "Done child", "state": "CLOSED", "repository": { "nameWithOwner": "owner/repo" }, "subIssues": { "nodes": [] } },
         ] } } } } })
         .to_string(),
     )]);
@@ -201,8 +203,53 @@ fn list_issues_v1_with_parent_lists_open_children_only() {
 
     // Assert
     assert_eq!(out.status, Some(0));
-    assert_eq!(out.stdout_json(), json!([{ "id": "110", "title": "Open child", "has_children": true }]));
+    assert_eq!(
+        out.stdout_json(),
+        json!([
+            { "id": "110", "title": "Open child", "repo": "owner/repo", "has_children": true },
+            { "id": "9", "title": "Cross-repo child", "repo": "owner/lib", "has_children": false },
+        ])
+    );
     assert!(server.requests()[0].contains(r#""number":100"#), "parent must be passed as a number");
+}
+
+#[test]
+fn list_group_issues_maps_project_items_across_repos() {
+    // Arrange: Projects V2 の items はリポジトリ横断。closed の項目は落とす
+    let server = ApiServer::serve(vec![(
+        "",
+        json!({ "data": { "repositoryOwner": { "projectV2": { "items": {
+            "pageInfo": { "endCursor": "pi==", "hasNextPage": true },
+            "nodes": [
+                { "content": { "number": 42, "title": "App task", "state": "OPEN", "repository": { "nameWithOwner": "owner/repo" }, "subIssues": { "nodes": [{ "state": "OPEN" }] } } },
+                { "content": { "number": 9, "title": "Lib task", "state": "OPEN", "repository": { "nameWithOwner": "owner/lib" }, "subIssues": { "nodes": [] } } },
+                { "content": { "number": 1, "title": "Done", "state": "CLOSED", "repository": { "nameWithOwner": "owner/repo" }, "subIssues": { "nodes": [] } } },
+                { "content": {} },
+            ],
+        } } } } })
+        .to_string(),
+    )]);
+    let env = TestEnv::new();
+
+    // Act
+    let out = env.run_env(
+        &server.url,
+        &["list-group-issues-v0", "--group", "5"],
+        &[("WSM_TRACKER_GITHUB_OWNER", "me")],
+    );
+
+    // Assert: draft や PR の項目 (Issue でない content) は落ちる
+    assert_eq!(out.status, Some(0));
+    assert_eq!(
+        out.stdout_json(),
+        json!({
+            "issues": [
+                { "id": "42", "title": "App task", "repo": "owner/repo", "has_children": true },
+                { "id": "9", "title": "Lib task", "repo": "owner/lib", "has_children": false },
+            ],
+            "next_cursor": "pi==",
+        })
+    );
 }
 
 #[test]

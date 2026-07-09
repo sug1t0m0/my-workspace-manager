@@ -217,28 +217,41 @@ _pick_repo() {
   fi
 }
 
-# Step 3: Issue / ワークスペース選択 (階層 + ページング対応)
-# has_children (▸) の Issue を選ぶと子 Issue の一覧に降りる。子の階層には
-# 「(この Issue を開く)」と「.. 戻る」の項目を出す。階層は選択 UX だけの
-# 概念で、選ばれた Issue id の扱い (worktree・セッション) は平坦なまま。
-# server が next_cursor を返した階層には「… さらに読み込む」を出し、
-# 選ばれたら続きのページを取得して同じ階層に足す。
-_pick_issue() {
-  local ns_repo=$1
+# Issue / ワークスペース選択 (階層 + ページング + リポジトリ横断)
+#   _pick_workspace repo <ns_repo>  … リポジトリ起点 (main を含む従来ビュー)
+#   _pick_workspace group <id>      … repo-group 起点 (グループ横断の Issue 一覧)
+# 行はサーバー応答の repo を保持し、選択結果は "repo\tid" で返す
+# (クロスリポジトリの子 Issue はその所属リポジトリで開くため)。
+# has_children (▸) の Issue を選ぶと子の一覧に降り、next_cursor がある階層は
+# 「… さらに読み込む」でページを足す。group のトップレベルが空
+# (トラッカー非対応 or open Issue なし) のときは __fallback__ を返し、
+# 呼び出し側は従来のリポジトリ起点フローに落ちる。
+_pick_workspace() {
+  local mode=$1 arg=$2
   local TAB=$'\t'
-  local -a parents=()  # ドリルダウンの親スタック
+  local -a parents=()  # ドリルダウンの親スタック ("repo|id")
   local -a acc=()      # 現在の階層で読み込み済みの行
-  local cursor=""      # 続きの cursor (空 = なし)
-  local fetch_cursor="" need_fetch=1
+  local cursor="" fetch_cursor="" need_fetch=1
+  local ctx_repo=""    # 現在の階層の基準リポジトリ (違う repo の行に repo# を付ける)
 
   while true; do
     if (( need_fetch )); then
-      local -a query=(list-issues --repo "$ns_repo")
-      (( ${#parents[@]} > 0 )) && query+=(--parent "${parents[-1]}")
+      local -a query=()
+      if (( ${#parents[@]} > 0 )); then
+        local top=${parents[-1]}
+        ctx_repo=${top%%|*}
+        query=(list-issues --repo "$ctx_repo" --parent "${top#*|}")
+      elif [[ "$mode" == "group" ]]; then
+        ctx_repo=""
+        query=(list-group-issues --group "$arg")
+      else
+        ctx_repo=$arg
+        query=(list-issues --repo "$arg")
+      fi
       [[ -n "$fetch_cursor" ]] && query+=(--cursor "$fetch_cursor")
       local json=$(_server "${query[@]}")
 
-      while IFS=$'\t' read -r id title active closed dc children; do
+      while IFS=$'\t' read -r id title repo active closed dc children; do
         [[ -n "$id" ]] || continue
         # 子の有無 (▸) は行頭に出す。行末だと長いタイトルの切り詰めで見えなくなる
         local marker="  "
@@ -246,6 +259,8 @@ _pick_issue() {
         local display=""
         if [[ "$id" == "main" ]]; then
           display="${marker}main  (ディスカッション・調査用)"
+        elif [[ "$repo" != "$ctx_repo" ]]; then
+          display="${marker}${repo}#${id}  ${title}"
         else
           display="${marker}#${id}  ${title}"
         fi
@@ -257,34 +272,50 @@ _pick_issue() {
         fi
         local dc_disp=$(_dc_indicator "$dc")
         [[ -n "$dc_disp" ]] && display+="  ${dc_disp}"
-        acc+=("${id}${TAB}${display}${TAB}${children}")
+        acc+=("${repo}${TAB}${id}${TAB}${display}${TAB}${children}")
       done < <(printf '%s\n' "$json" \
-        | jq -r '.issues[] | "\(.id)\t\(.title)\t\(.active)\t\(.closed)\t\(.devcontainer // "none")\t\(.has_children // false)"')
+        | jq -r '.issues[] | "\(.id)\t\(.title)\t\(.repo)\t\(.active)\t\(.closed)\t\(.devcontainer // "none")\t\(.has_children // false)"')
 
       cursor=$(printf '%s\n' "$json" | jq -r '.next_cursor // empty')
       need_fetch=0
       fetch_cursor=""
+
+      # group のトップレベルが空 → リポジトリ起点フローへ
+      if [[ "$mode" == "group" && ${#parents[@]} -eq 0 && ${#acc[@]} -eq 0 && -z "$cursor" ]]; then
+        echo "__fallback__"
+        return 0
+      fi
     fi
 
-    local header="$ns_repo"
-    (( ${#parents[@]} > 0 )) && header+="  #${(j: > #:)parents}"
+    local header=""
+    if [[ "$mode" == "group" ]]; then
+      header="repo-group ${arg}"
+    else
+      header="$arg"
+    fi
+    local p
+    for p in "${parents[@]}"; do header+="  ${p%%|*}#${p#*|} >"; done
+
     local items=()
     if (( ${#parents[@]} > 0 )); then
-      items+=("__self__${TAB}  (この Issue #${parents[-1]} を開く)")
-      items+=("__up__${TAB}  ..")
+      local top=${parents[-1]}
+      items+=("-${TAB}__self__${TAB}  (この Issue #${top#*|} を開く)")
+      items+=("-${TAB}__up__${TAB}  ..")
     fi
     items+=("${acc[@]}")
-    [[ -n "$cursor" ]] && items+=("__more__${TAB}  … さらに読み込む")
+    [[ -n "$cursor" ]] && items+=("-${TAB}__more__${TAB}  … さらに読み込む")
 
     local selected=$(printf '%s\n' "${items[@]}" \
-      | fzf --with-nth=2 --delimiter=$'\t' --height=40% --reverse --prompt="Issue> " --header="$header")
+      | fzf --with-nth=3 --delimiter=$'\t' --height=40% --reverse --prompt="Issue> " --header="$header")
     [[ -z "$selected" ]] && return 0
 
-    local sel_id=$(printf '%s\n' "$selected" | cut -f1)
-    local sel_children=$(printf '%s\n' "$selected" | cut -f3)
+    local sel_repo=$(printf '%s\n' "$selected" | cut -f1)
+    local sel_id=$(printf '%s\n' "$selected" | cut -f2)
+    local sel_children=$(printf '%s\n' "$selected" | cut -f4)
     case "$sel_id" in
       __self__)
-        printf '%s\n' "${parents[-1]}"
+        local top=${parents[-1]}
+        printf '%s\t%s\n' "${top%%|*}" "${top#*|}"
         return 0
         ;;
       __up__)
@@ -298,15 +329,59 @@ _pick_issue() {
         ;;
       *)
         if [[ "$sel_children" == "true" ]]; then
-          parents+=("$sel_id")
+          parents+=("${sel_repo}|${sel_id}")
           acc=() cursor="" need_fetch=1
         else
-          printf '%s\n' "$sel_id"
+          printf '%s\t%s\n' "$sel_repo" "$sel_id"
           return 0
         fi
         ;;
     esac
   done
+}
+
+# Issue 選択後の作業リポジトリ選択。既定 (先頭) は Issue の所属リポジトリで、
+# 同じ repo-group のローカルにあるリポジトリを代わりに選べる。
+# 候補が所属リポジトリしかなければ選択画面を出さずに確定する。
+_pick_work_repo() {
+  local group_id=$1 home_repo=$2
+  local TAB=$'\t'
+
+  local json=$(_server list-repos --group "$group_id")
+  local items=("${home_repo}${TAB}${home_repo}  (この Issue のリポジトリ)")
+  local repo active_count
+  while IFS=$'\t' read -r repo active_count; do
+    [[ -n "$repo" && "$repo" != "$home_repo" ]] || continue
+    local display="$repo"
+    if [[ "$active_count" -gt 0 ]]; then
+      display+="  (${active_count} workspaces)"
+    fi
+    items+=("${repo}${TAB}${display}")
+  done < <(printf '%s\n' "$json" | jq -r '.[] | "\(.ns_repo)\t\(.active_count)"')
+
+  if (( ${#items[@]} == 1 )); then
+    printf '%s\n' "$home_repo"
+    return 0
+  fi
+  local selected=$(printf '%s\n' "${items[@]}" \
+    | fzf --with-nth=2.. --delimiter=$'\t' --height=40% --reverse \
+          --prompt="Work repo> " --header="Issue の所属: ${home_repo}")
+  [[ -n "$selected" ]] && printf '%s\n' "$selected" | cut -f1
+}
+
+# 作業リポジトリが Issue の所属リポジトリと違うときの workspace id。
+# 所属リポジトリ名を接頭辞にした修飾 id (api-42) を導出する
+# (作業先リポジトリ自身の同番号 Issue と衝突させない。id の文法に
+# 収まるよう、リポジトリ名の英数と - 以外は - に潰す)。
+_workspace_id_for() {
+  local home_repo=$1 work_repo=$2 issue_id=$3
+  if [[ "$work_repo" == "$home_repo" || "$issue_id" == "main" ]]; then
+    printf '%s\n' "$issue_id"
+  else
+    local base=${home_repo##*/}
+    base=${base//[^A-Za-z0-9-]/-}
+    printf '%s-%s\n' "$base" "$issue_id"
+  fi
 }
 
 # Multi-select fzf picker for devcontainer configs.
@@ -534,15 +609,35 @@ case "$cmd" in
         export WSM_SESSION_MANAGER=$selected_manager
       fi
 
-      # 段階選択: repo-group → リポジトリ → Issue → DevContainer
+      # 段階選択 (Issue 起点): repo-group → Issue → 作業リポジトリ → DevContainer。
+      # 「グループなし」とグループの Issue 一覧が空のときは従来の
+      # リポジトリ起点 (リポジトリ → Issue) に落ちる
       group_id=$(_pick_repo_group)
       [[ -z "$group_id" ]] && exit 0
 
-      ns_repo=$(_pick_repo "$group_id")
-      [[ -z "$ns_repo" ]] && exit 0
+      selection=""
+      if [[ "$group_id" != "none" ]]; then
+        selection=$(_pick_workspace group "$group_id")
+        [[ -z "$selection" ]] && exit 0
+      fi
 
-      issue_id=$(_pick_issue "$ns_repo")
-      [[ -z "$issue_id" ]] && exit 0
+      if [[ -z "$selection" || "$selection" == "__fallback__" ]]; then
+        # リポジトリ起点フロー
+        ns_repo=$(_pick_repo "$group_id")
+        [[ -z "$ns_repo" ]] && exit 0
+        selection=$(_pick_workspace repo "$ns_repo")
+        [[ -z "$selection" || "$selection" == "__fallback__" ]] && exit 0
+        home_repo=${selection%%$'\t'*}
+        issue_id=${selection#*$'\t'}
+        # クロスリポジトリの子 Issue はその所属リポジトリで開く
+        ns_repo=$home_repo
+      else
+        home_repo=${selection%%$'\t'*}
+        issue_id=${selection#*$'\t'}
+        ns_repo=$(_pick_work_repo "$group_id" "$home_repo")
+        [[ -z "$ns_repo" ]] && exit 0
+        issue_id=$(_workspace_id_for "$home_repo" "$ns_repo" "$issue_id")
+      fi
 
       with_devcontainer=true
     else

@@ -471,6 +471,16 @@ remove は逆順で破棄する(Terminal は管理外なので対象外):
 [{"id": "1", "title": "..."}]
 ```
 
+`list-group-issues --group <id> [--cursor <token>]`
+→ repo-group に属する open な Issue の 1 ページ (リポジトリ横断、
+既定トラッカー)。Issue 起点フローのトップレベル。main・孤児 worktree は
+リポジトリ単位の概念なので出ない。プラグイン非対応時は空
+(UI はリポジトリ起点フローに落ちる)。
+```json
+{"issues": [{"id": "42", "title": "...", "repo": "owner/repo", "active": false, "closed": false, "devcontainer": "none", "has_children": false}],
+ "next_cursor": null}
+```
+
 `list-repos --group <id|none>`
 → リポジトリ一覧。`none` は RepoStore (ghq + 設定 `[[repo]]`) の
 全リポジトリ、id 指定時はその repo-group に属し RepoStore にもあるもの
@@ -487,7 +497,9 @@ remove は逆順で破棄する(Terminal は管理外なので対象外):
 子 Issue のみ (階層のドリルダウン用)、`--cursor` 指定時は続きのページ。
 `next_cursor` が非 null なら続きがある (ページの件数と並びはプラグインの
 責務)。`has_children` が子 Issue の有無 (v0 しか知らないプラグインでは
-常に false)。RepoStore で解決できないリポジトリはエラー
+常に false)。`repo` は各 Issue の所属リポジトリ (クロスリポジトリの
+子 Issue は照会したリポジトリと違うことがあり、セッション・コンテナの
+状態もその repo の文脈で見る)。RepoStore で解決できないリポジトリはエラー
 (`repository not found` / `ambiguous repository`。open /
 list-devcontainer-configs も同様)。
 ```json
@@ -606,11 +618,21 @@ wsm 本体のリリースを要しないこと、が目的)。
 |---|---|
 | `list-repo-groups-v0` | `[{"id": "...", "title": "..."}]` — open な repo-group。UI の表示順で返す |
 | `repo-group-repos-v0 --group <id>` | `["ns/repo", ...]` — repo-group 所属のリポジトリ |
+| `list-group-issues-v0 --group <id> [--cursor <token>]` | `{"issues": [{"id", "title", "repo", "has_children"}], "next_cursor"}` — repo-group に属する open な Issue の 1 ページ (リポジトリ横断。`repo` 必須) |
 | `list-issues-v2 --repo <ns/repo> [--parent <id>] [--cursor <token>]` | `{"issues": [{"id", "title", "has_children"}], "next_cursor": "<token>" \| null}` — open な Issue の 1 ページ |
 | `list-issues-v1 --repo <ns/repo> [--parent <id>]` | `[{"id": "...", "title": "...", "has_children": bool}]` — v2 非対応プラグイン向け (ページングなしの全件) |
 | `list-issues-v0 --repo <ns/repo>` | `[{"id": "...", "title": "..."}]` — v1 非対応プラグイン向け (平坦な一覧) |
 | `issue-v0 --repo <ns/repo> --id <id>` | `{"title": "...", "state": "open" \| "closed"}` — 単一 Issue |
 | `info-v0` | `{"name": "...", "protocol": ["<動詞>", ...], "ready": true\|false, "diagnosis": "..."}` — 自己診断 |
+
+Issue の所属リポジトリ (`repo` フィールド):
+
+- issue 要素は任意フィールド `repo` (`"ns/name"`) で所属リポジトリを名乗れる。
+  省略時は照会したリポジトリ。sub-issues はリポジトリ横断で張れるため、
+  よそのリポジトリの子は `repo` を付けて返すこと (wsm はその Issue を
+  正しいリポジトリの文脈で表示・open する)
+- `list-group-issues-v0` では `repo` は必須 (グループはリポジトリ横断の
+  ビューで、既定のリポジトリが存在しないため)
 
 Issue の階層 (`--parent` / `has_children`):
 
@@ -675,7 +697,9 @@ wsm は v2 → v1 → v0 の順に試す (未知の動詞 → 非ゼロ、で非
 - `id` は Issue id の文法 (英数と `-`、先頭英数) で検証し、違反する要素と
   番兵値 `main` は捨てる。id はブランチ名・セッション名・Docker ラベルに
   流れ込むため、ここが注入対策の関所
-- `ns/repo` は RepoRef の文法で検証する (`repo-group-repos-v0` の応答)
+- `ns/repo` は RepoRef の文法で検証する (`repo-group-repos-v0` の応答と
+  issue 要素の `repo`。issue の `repo` が形の不正なときは要素ごと捨てる —
+  黙って「同じリポジトリ」に読み替えない)
 - `title` は表示にしか使わないため任意の文字列を許す
 
 逆にプラグインが前提にしてよいこと: 引数は wsm が検証済みの形でのみ渡る。
@@ -801,6 +825,24 @@ herdr 本来のモデル (セッションの中に workspace) に合わせる。
 - 最後の Issue workspace を閉じてセッションが空になったら stop + delete で畳む
 - open 時は該当 workspace にフォーカスを移す
 - Issue workspace のラベルは Issue id のみ (`42`, `CHH-111`)
+
+### ワークスペースの選択は Issue 起点
+
+対話フローは「repo-group → Issue (リポジトリ横断) → 作業リポジトリ」。
+リポジトリを先に選ばせると「リポジトリに紐づいた Issue を探す」メンタル
+モデルになるが、実際の起点は Issue であり、リポジトリは作業場所にすぎない。
+
+- 作業リポジトリの既定は Issue の所属リポジトリ。同じ repo-group の
+  ローカルにある別リポジトリも選べる (組織運用で Issue と作業場所が
+  ずれるケース)
+- 所属と作業先が違うとき、workspace id は UI が修飾 id
+  `<所属リポジトリ名>-<id>` (例 `api-42`。リポジトリ名の英数と `-` 以外は
+  `-` に潰す) を導出する。作業先自身の同番号 Issue と衝突させず、
+  ブランチ名 `feature/api-42` に由来が残る。修飾 id の workspace は
+  作業先の Issue 一覧と突合できないため、一覧上は孤児 (unknown) になる
+  (既知の制約)
+- 「グループなし」とグループの Issue 一覧が空 (トラッカー非対応を含む)
+  のときは、従来のリポジトリ起点フロー (リポジトリ → Issue) に落ちる
 
 ### リポジトリの識別子は ns/repo、host は RepoStore のメタ情報
 

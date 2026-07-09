@@ -45,8 +45,17 @@ pub fn repo_group_repos(bin: &Path, group: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
-/// open な Issue の 1 ページ。(一覧, 続きの cursor) を返し、一覧の 1 要素は
-/// (id, タイトル, 子 Issue の有無)。取得できなければ空。
+/// プラグインが返す open な Issue の 1 要素。repo は Issue の所属リポジトリ
+/// (省略時は照会したリポジトリ。sub-issues はリポジトリ横断で張れるため、
+/// 子がよそのリポジトリのこともある)。
+pub struct IssueItem {
+    pub id: String,
+    pub title: String,
+    pub has_children: bool,
+    pub repo: Option<String>,
+}
+
+/// open な Issue の 1 ページ。(一覧, 続きの cursor) を返す。取得できなければ空。
 /// 並びと 1 ページの件数はプラグインの責務 (UI はそのまま表示する)。
 ///
 /// ページング対応の list-issues-v2 → 階層対応の list-issues-v1 → 平坦な
@@ -59,7 +68,7 @@ pub fn open_issues(
     repo: &RepoRef,
     parent: Option<&str>,
     cursor: Option<&str>,
-) -> (Vec<(String, String, bool)>, Option<String>) {
+) -> (Vec<IssueItem>, Option<String>) {
     let ns_repo = repo.ns_repo();
     let mut args = vec!["list-issues-v2", "--repo", ns_repo.as_str()];
     if let Some(parent) = parent {
@@ -70,11 +79,7 @@ pub fn open_issues(
     }
     if let Some(page) = call(bin, &args) {
         if let Some(items) = page["issues"].as_array() {
-            let next_cursor = page["next_cursor"]
-                .as_str()
-                .filter(|c| domain::is_valid_cursor(c))
-                .map(str::to_owned);
-            return (issue_items(items, true), next_cursor);
+            return (issue_items(items, true), next_cursor_of(&page));
         }
     }
     if cursor.is_some() {
@@ -99,14 +104,51 @@ pub fn open_issues(
     (items, None)
 }
 
-fn issue_items(items: &[Value], hierarchical: bool) -> Vec<(String, String, bool)> {
+/// repo-group に属する open な Issue の 1 ページ (リポジトリ横断)。
+/// 各要素の repo は必須で、欠落・形の不正な要素は捨てる。
+/// 非対応プラグイン (未知の動詞 → 非ゼロ) は空 (UI は従来のリポジトリ起点
+/// フローに落ちる)。
+pub fn group_issues(
+    bin: &Path,
+    group: &str,
+    cursor: Option<&str>,
+) -> (Vec<IssueItem>, Option<String>) {
+    let mut args = vec!["list-group-issues-v0", "--group", group];
+    if let Some(cursor) = cursor {
+        args.extend(["--cursor", cursor]);
+    }
+    let Some(page) = call(bin, &args) else { return (Vec::new(), None) };
+    let Some(items) = page["issues"].as_array() else { return (Vec::new(), None) };
+    let issues = issue_items(items, true).into_iter().filter(|i| i.repo.is_some()).collect();
+    (issues, next_cursor_of(&page))
+}
+
+fn next_cursor_of(page: &Value) -> Option<String> {
+    page["next_cursor"].as_str().filter(|c| domain::is_valid_cursor(c)).map(str::to_owned)
+}
+
+fn issue_items(items: &[Value], hierarchical: bool) -> Vec<IssueItem> {
     items
         .iter()
         .filter_map(|item| {
             let id = item["id"].as_str()?;
+            if !valid_issue_id(id) {
+                return None;
+            }
             let title = item["title"].as_str()?;
-            let has_children = hierarchical && item["has_children"].as_bool().unwrap_or(false);
-            valid_issue_id(id).then(|| (id.to_owned(), title.to_owned(), has_children))
+            // repo は任意だが、形の不正な値は要素ごと捨てる (open の対象に
+            // 流れ込むため、黙って「同じリポジトリ」に読み替えない)
+            let repo = match &item["repo"] {
+                Value::Null => None,
+                Value::String(repo) => Some(RepoRef::parse(repo)?.ns_repo()),
+                _ => return None,
+            };
+            Some(IssueItem {
+                id: id.to_owned(),
+                title: title.to_owned(),
+                has_children: hierarchical && item["has_children"].as_bool().unwrap_or(false),
+                repo,
+            })
         })
         .collect()
 }
