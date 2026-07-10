@@ -510,9 +510,11 @@ remove は逆順で破棄する(Terminal は管理外なので対象外):
 責務)。`has_children` が子 Issue の有無 (v0 しか知らないプラグインでは
 常に false)。`repo` は各 Issue の所属リポジトリ (クロスリポジトリの
 子 Issue は照会したリポジトリと違うことがあり、セッション・コンテナの
-状態もその repo の文脈で見る)。RepoStore で解決できないリポジトリはエラー
-(`repository not found` / `ambiguous repository`。open /
-list-devcontainer-configs も同様)。
+状態もその repo の文脈で見る)。**RepoStore に未登録のリポジトリも照会できる**
+(アンブレラ = Issue だけの置き場でクローンしない運用のため。worktree 由来の
+情報 (active / 孤児) が出ないだけ)。重複 (`ambiguous repository`) はエラー。
+open / list-devcontainer-configs はクローンの実体が要るため、未登録は
+従来どおり `repository not found`。
 ```json
 {"issues": [{"id": "main", "title": "...", "active": false, "closed": false, "devcontainer": "none", "has_children": false}],
  "next_cursor": null}
@@ -851,7 +853,9 @@ herdr 本来のモデル (セッションの中に workspace) に合わせる。
 
 - 作業リポジトリの既定は Issue の所属リポジトリ。同じ repo-group の
   ローカルにある別リポジトリも選べる (組織運用で Issue と作業場所が
-  ずれるケース)
+  ずれるケース)。所属リポジトリがローカルにない (アンブレラ = Issue だけの
+  置き場でクローンしない) ときは候補から外す — Issue の照会・ドリルは
+  クローンなしで成立し、作業は常に別リポジトリで行う
 - 所属と作業先が違うとき、workspace id は UI が修飾 id
   `<所属リポジトリ名>-<id>` (例 `api-42`。リポジトリ名の英数と `-` 以外は
   `-` に潰す) を導出する。作業先自身の同番号 Issue と衝突させず、

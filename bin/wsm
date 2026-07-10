@@ -349,7 +349,8 @@ _pick_workspace() {
 
 # Issue 選択後の作業リポジトリ選択。既定 (先頭) は Issue の所属リポジトリで、
 # 同じ repo-group のローカルにあるリポジトリを代わりに選べる。
-# 候補が所属リポジトリしかなければ選択画面を出さずに確定する。
+# 所属リポジトリがローカルにない (アンブレラ等、Issue だけの置き場) ときは
+# 候補から外す — 選んでも開けないため。候補が 1 つならそれで確定する。
 _pick_work_repo() {
   local group_id=$1 home_repo=$2 group_tracker=${3:-}
   local TAB=$'\t'
@@ -357,24 +358,36 @@ _pick_work_repo() {
   local -a query=(list-repos --group "$group_id")
   [[ -n "$group_tracker" && "$group_tracker" != "-" ]] && query+=(--tracker "$group_tracker")
   local json=$(_server "${query[@]}")
-  local items=("${home_repo}${TAB}${home_repo}  (この Issue のリポジトリ)")
+  local items=() home_local=false
   local repo active_count
   while IFS=$'\t' read -r repo active_count; do
-    [[ -n "$repo" && "$repo" != "$home_repo" ]] || continue
+    [[ -n "$repo" ]] || continue
     local display="$repo"
     if [[ "$active_count" -gt 0 ]]; then
       display+="  (${active_count} workspaces)"
     fi
-    items+=("${repo}${TAB}${display}")
+    if [[ "$repo" == "$home_repo" ]]; then
+      home_local=true
+      items=("${repo}${TAB}${display}  (この Issue のリポジトリ)" "${items[@]}")
+    else
+      items+=("${repo}${TAB}${display}")
+    fi
   done < <(printf '%s\n' "$json" | jq -r '.[] | "\(.ns_repo)\t\(.active_count)"')
 
+  local header="Issue の所属: ${home_repo}"
+  [[ "$home_local" == false ]] && header+="  (ローカルになし)"
+
+  if (( ${#items[@]} == 0 )); then
+    echo "No local repositories in this group" >&2
+    return 1
+  fi
   if (( ${#items[@]} == 1 )); then
-    printf '%s\n' "$home_repo"
+    printf '%s\n' "${items[1]}" | cut -f1
     return 0
   fi
   local selected=$(printf '%s\n' "${items[@]}" \
     | fzf --with-nth=2.. --delimiter=$'\t' --height=40% --reverse \
-          --prompt="Work repo> " --header="Issue の所属: ${home_repo}")
+          --prompt="Work repo> " --header="$header")
   [[ -n "$selected" ]] && printf '%s\n' "$selected" | cut -f1
 }
 

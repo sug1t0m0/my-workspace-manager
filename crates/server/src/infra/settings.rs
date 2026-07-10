@@ -250,14 +250,19 @@ impl Trackers {
     }
 
     /// リポジトリのトラッカー解決。優先順位:
-    /// [[repo]].tracker (明示) > ns マッピング > 既定。
+    /// 明示 ([[repo]].tracker) > ns マッピング > 既定。
     /// トラッカーが全く設定されていなければ None (照会は縮退する)。
-    pub fn for_repo(&self, entry: &RepoEntry) -> Result<Option<&Tracker>, String> {
-        if let Some(name) = entry.tracker.as_deref() {
+    /// RepoStore に未登録のリポジトリ (アンブレラ等) も照会できるよう、
+    /// RepoEntry ではなく識別子と明示指定を受ける。
+    pub fn for_repo(
+        &self,
+        repo: &RepoRef,
+        explicit: Option<&str>,
+    ) -> Result<Option<&Tracker>, String> {
+        if let Some(name) = explicit {
             return self.named(name).map(Some);
         }
-        if let Some(tracker) =
-            self.entries.iter().find(|t| t.ns.iter().any(|ns| ns == entry.repo.ns()))
+        if let Some(tracker) = self.entries.iter().find(|t| t.ns.iter().any(|ns| ns == repo.ns()))
         {
             return Ok(Some(tracker));
         }

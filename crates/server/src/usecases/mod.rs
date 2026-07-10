@@ -171,7 +171,7 @@ pub fn list_workspaces(home: &Path) -> CmdResult {
     let mut rows = Vec::new();
     for entry in repostore::entries(home)? {
         let repo = &entry.repo;
-        let plugin = trackers.for_repo(&entry)?;
+        let plugin = trackers.for_repo(repo, entry.tracker.as_deref())?;
         let main_entry = session::workspace_session_exists(repo, &WorkspaceId::Main, &managers)
             .then(|| {
                 json!({
@@ -211,13 +211,20 @@ pub fn list_issues(
     parent: Option<String>,
     cursor: Option<String>,
 ) -> CmdResult {
-    let entry = repostore::lookup(home, repo)?;
+    // 未登録のリポジトリ (アンブレラ等、Issue だけがありローカルクローンの
+    // ないもの) でも照会は成立する。worktree 由来の情報 (active / 孤児) が
+    // 出ないだけで、open は従来どおり lookup がエラーにする
+    let entry = repostore::find(home, repo)?;
     let paths = paths(home);
     let managers = settings::session_managers(home);
     let trackers = settings::trackers(home)?;
-    let plugin = trackers.for_repo(&entry)?;
+    let plugin =
+        trackers.for_repo(repo, entry.as_ref().and_then(|e| e.tracker.as_deref()))?;
 
-    let active_ids = active_issue_ids(&paths, &entry, &managers);
+    let active_ids = entry
+        .as_ref()
+        .map(|entry| active_issue_ids(&paths, entry, &managers))
+        .unwrap_or_default();
     let (open_issues, next_cursor) = plugin
         .map(|t| tracker::open_issues(t, repo, parent.as_deref(), cursor.as_deref()))
         .unwrap_or_else(|| (Vec::new(), None));

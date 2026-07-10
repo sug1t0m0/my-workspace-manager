@@ -26,20 +26,26 @@ pub fn entries(home: &Path) -> Result<Vec<RepoEntry>, String> {
     Ok(entries)
 }
 
-/// 識別子 `<ns>/<repo>` からエントリを解決する。見つからない・複数の host に
-/// またがって重複する場合はエラー (識別子の一意性が規約)。
-pub fn lookup(home: &Path, repo: &RepoRef) -> Result<RepoEntry, String> {
+/// 識別子 `<ns>/<repo>` からエントリを探す。Ok(None) = 未登録 (Issue の照会は
+/// ローカルクローンなしでも成立するため、呼び出し側が扱いを決める)。
+/// 複数の host にまたがる重複と設定の誤りはエラー (識別子の一意性が規約)。
+pub fn find(home: &Path, repo: &RepoRef) -> Result<Option<RepoEntry>, String> {
     let mut matches: Vec<RepoEntry> =
         entries(home)?.into_iter().filter(|entry| entry.repo == *repo).collect();
     match matches.len() {
-        0 => Err(format!("repository not found: {}", repo.ns_repo())),
-        1 => Ok(matches.remove(0)),
+        0 => Ok(None),
+        1 => Ok(Some(matches.remove(0))),
         _ => Err(format!(
             "ambiguous repository: {} ({})",
             repo.ns_repo(),
             matches.iter().map(|entry| entry.host.as_str()).collect::<Vec<_>>().join(", ")
         )),
     }
+}
+
+/// find() の必須版 (open など、クローンの実体が要る操作に使う)。
+pub fn lookup(home: &Path, repo: &RepoRef) -> Result<RepoEntry, String> {
+    find(home, repo)?.ok_or_else(|| format!("repository not found: {}", repo.ns_repo()))
 }
 
 fn ghq_entries(root: &Path) -> Vec<RepoEntry> {

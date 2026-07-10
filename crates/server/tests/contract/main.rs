@@ -889,6 +889,39 @@ fn cross_repo_children_carry_their_home_repo() {
 }
 
 #[test]
+fn unregistered_repo_issues_are_still_queryable() {
+    // Arrange: sprocket/umbrella は RepoStore のどこにもない (アンブレラ =
+    // Issue だけの置き場でクローンしない)。トラッカーは ns マッピングで解決
+    let env = TestEnv::new();
+    let config = format!(
+        "{}{}ns = \"sprocket\"\n",
+        env.managers_config(&["tmux", "herdr"]),
+        env.tracker_config()
+    );
+    env.write_home(".config/wsm/config.toml", &config)
+        .stub("^docker ps -a", "")
+        .stub(
+            "^tracker list-issues-v2 --repo sprocket/umbrella --parent 7$",
+            r#"{"issues":[{"id":"71","title":"My task","repo":"sprocket/api"}],"next_cursor":null}"#,
+        );
+
+    // Act: 照会もドリルも通る (worktree 由来の情報が出ないだけ)
+    let out = env.run(&["list-issues", "--repo", "sprocket/umbrella", "--parent", "7"]);
+
+    // Assert
+    assert_eq!(out.status, Some(0));
+    assert_eq!(out.stdout_json()["issues"][0]["repo"], "sprocket/api");
+
+    // open はクローンの実体が要るので従来どおりエラー
+    let open = env.run(&["open", "--repo", "sprocket/umbrella", "--issue", "7"]);
+    assert_eq!(open.status, Some(1));
+    assert_eq!(
+        open.stderr_json(),
+        json!({ "error": "repository not found: sprocket/umbrella" })
+    );
+}
+
+#[test]
 fn list_group_issues_spans_repositories() {
     // Arrange: repo-group 横断の Issue 一覧 (Issue 起点フローのトップレベル)。
     // 各要素の repo は必須で、欠落した要素は捨てる
