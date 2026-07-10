@@ -82,9 +82,15 @@ case "$verb" in
 
   list-group-issues-v0)
     # グループ横断の Issue 一覧 (Issue 起点フローのトップレベル)。
-    # demo/app と demo/lib の 2 リポジトリにまたがる
+    # demo/app と demo/lib の 2 リポジトリにまたがる。
+    # WSM_TRACKER_ROOT_LABEL が設定されているとルート (#100) だけに絞られる
+    # 動作を模す (ラベル運用の UI 確認用)
     flag --group "$@" >/dev/null
-    echo '{"issues":[{"id":"100","title":"Epic: demo migration","repo":"demo/app","has_children":true},{"id":"200","title":"Lib: rework parser","repo":"demo/lib"}],"next_cursor":null}'
+    if [ -n "${WSM_TRACKER_ROOT_LABEL:-}" ]; then
+      echo '{"issues":[{"id":"100","title":"Epic: demo migration","repo":"demo/app","has_children":true}],"next_cursor":null}'
+    else
+      echo '{"issues":[{"id":"100","title":"Epic: demo migration","repo":"demo/app","has_children":true},{"id":"200","title":"Lib: rework parser","repo":"demo/lib"}],"next_cursor":null}'
+    fi
     ;;
 
   list-issues-v2)

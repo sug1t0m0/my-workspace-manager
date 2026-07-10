@@ -133,6 +133,7 @@ impl TestEnv {
             .env("WSM_TRACKER_GITHUB_API_URL", api_url)
             .env_remove("WSM_TRACKER_OWNER")
             .env_remove("WSM_TRACKER_GITHUB_OWNER")
+            .env_remove("WSM_TRACKER_ROOT_LABEL")
             .envs(envs.iter().copied())
             .output()
             .expect("run wsm-tracker-github-api");
@@ -361,6 +362,42 @@ fn list_issues_v2_last_page_has_no_cursor() {
     // Assert
     assert_eq!(out.status, Some(0));
     assert_eq!(out.stdout_json(), json!({ "issues": [], "next_cursor": null }));
+}
+
+#[test]
+fn root_label_narrows_group_issues_to_marked_roots() {
+    // Arrange: エピック #42 だけに wsm-root ラベルが付いている
+    let items = json!({ "data": { "repositoryOwner": { "projectV2": { "items": {
+        "pageInfo": { "endCursor": null, "hasNextPage": false },
+        "nodes": [
+            { "content": { "number": 42, "title": "Team epic", "state": "OPEN", "repository": { "nameWithOwner": "acme/umbrella" }, "labels": { "nodes": [{ "name": "wsm-root" }, { "name": "P1" }] }, "subIssues": { "nodes": [{ "state": "OPEN" }] } } },
+            { "content": { "number": 9, "title": "Someone's task", "state": "OPEN", "repository": { "nameWithOwner": "acme/api" }, "labels": { "nodes": [{ "name": "bug" }] }, "subIssues": { "nodes": [] } } },
+        ],
+    } } } } })
+    .to_string();
+    let server = ApiServer::serve(vec![("", items.clone()), ("", items)]);
+    let env = TestEnv::new();
+
+    // Act: root_label あり / なし
+    let narrowed = env.run_env(
+        &server.url,
+        &["list-group-issues-v0", "--group", "5"],
+        &[("WSM_TRACKER_GITHUB_OWNER", "acme"), ("WSM_TRACKER_ROOT_LABEL", "wsm-root")],
+    );
+    let full = env.run_env(
+        &server.url,
+        &["list-group-issues-v0", "--group", "5"],
+        &[("WSM_TRACKER_GITHUB_OWNER", "acme")],
+    );
+
+    // Assert: ラベル付きのルートだけに絞られ、未設定なら全件
+    assert_eq!(narrowed.status, Some(0));
+    assert_eq!(
+        narrowed.stdout_json()["issues"],
+        json!([{ "id": "42", "title": "Team epic", "repo": "acme/umbrella", "has_children": true }])
+    );
+    assert_eq!(full.status, Some(0));
+    assert_eq!(full.stdout_json()["issues"].as_array().map(Vec::len), Some(2));
 }
 
 #[test]

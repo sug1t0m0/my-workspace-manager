@@ -159,16 +159,21 @@ fn list_issues_page(
 /// repo-group (= GitHub Project) に属する open な Issue の 1 ページ。
 /// Projects V2 の items はリポジトリ横断なので、各 Issue に repo を付けて返す。
 /// どの Issue を項目にするかは Project 側の運用に従う (親子での絞り込みはしない)。
+///
+/// 設定 `root_label` (WSM_TRACKER_ROOT_LABEL) があるときは、そのラベルの
+/// 付いた Issue だけに絞る。組織の Project は全員の項目が並んでノイジーな
+/// ため、ルート Issue (エピック等) にラベルで印を付け、そこから既存の
+/// 階層ドリルで open な子孫を辿る、という運用のための入り口。
 fn list_group_issues(group: &str, cursor: Option<String>) -> Result<Value, String> {
     const QUERY: &str = "query($owner: String!, $num: Int!, $cursor: String) {
       repositoryOwner(login: $owner) {
         ... on User { projectV2(number: $num) { items(first: 50, after: $cursor) {
           pageInfo { endCursor hasNextPage }
-          nodes { content { ... on Issue { number title state repository { nameWithOwner } subIssues(first: 50) { nodes { state } } } } }
+          nodes { content { ... on Issue { number title state repository { nameWithOwner } labels(first: 20) { nodes { name } } subIssues(first: 50) { nodes { state } } } } }
         } } }
         ... on Organization { projectV2(number: $num) { items(first: 50, after: $cursor) {
           pageInfo { endCursor hasNextPage }
-          nodes { content { ... on Issue { number title state repository { nameWithOwner } subIssues(first: 50) { nodes { state } } } } }
+          nodes { content { ... on Issue { number title state repository { nameWithOwner } labels(first: 20) { nodes { name } } subIssues(first: 50) { nodes { state } } } } }
         } } }
       }
     }";
@@ -178,14 +183,26 @@ fn list_group_issues(group: &str, cursor: Option<String>) -> Result<Value, Strin
         QUERY,
         json!({ "owner": owner, "num": number, "cursor": cursor }),
     )?;
+    let root_label = root_label();
     let (nodes, next_cursor) = page(&data["repositoryOwner"]["projectV2"]["items"]);
     let issues: Vec<Value> = nodes
         .iter()
         .map(|n| &n["content"])
         .filter(|c| c["state"].as_str() == Some("OPEN"))
+        .filter(|c| match &root_label {
+            None => true,
+            Some(label) => c["labels"]["nodes"]
+                .as_array()
+                .is_some_and(|labels| labels.iter().any(|l| l["name"].as_str() == Some(label))),
+        })
         .filter_map(|c| issue_item(c, true))
         .collect();
     Ok(json!({ "issues": issues, "next_cursor": next_cursor }))
+}
+
+/// ルート Issue のラベル ([[tracker]] の拡張キー root_label)。
+fn root_label() -> Option<String> {
+    std::env::var("WSM_TRACKER_ROOT_LABEL").ok().filter(|label| !label.is_empty())
 }
 
 /// 単一 Issue の {title, state}。state は契約の中立語彙 open / closed。
