@@ -619,7 +619,7 @@ fn list_issues_degrades_to_main_when_no_tracker_configured() {
     assert_eq!(
         out.stdout_json(),
         json!({ "issues": [
-            { "id": "main", "title": "main", "repo": "owner/repo", "active": false, "closed": false, "devcontainer": "none", "has_children": false },
+            { "id": "main", "title": "main", "repo": "owner/repo", "active": false, "closed": false, "devcontainer": "none", "has_children": false, "orphan": false },
         ], "next_cursor": null })
     );
 }
@@ -748,8 +748,8 @@ fn invalid_issue_ids_from_plugin_are_dropped() {
     assert_eq!(
         out.stdout_json(),
         json!({ "issues": [
-            { "id": "main", "title": "main", "repo": "owner/repo", "active": false, "closed": false, "devcontainer": "none", "has_children": false },
-            { "id": "42", "title": "Ok", "repo": "owner/repo", "active": false, "closed": false, "devcontainer": "none", "has_children": false },
+            { "id": "main", "title": "main", "repo": "owner/repo", "active": false, "closed": false, "devcontainer": "none", "has_children": false, "orphan": false },
+            { "id": "42", "title": "Ok", "repo": "owner/repo", "active": false, "closed": false, "devcontainer": "none", "has_children": false, "orphan": false },
         ], "next_cursor": null })
     );
 }
@@ -825,9 +825,9 @@ fn list_issues_combines_main_and_open_issues() {
     assert_eq!(
         out.stdout_json(),
         json!({ "issues": [
-            { "id": "main", "title": "main", "repo": "owner/repo", "active": false, "closed": false, "devcontainer": "none", "has_children": false },
-            { "id": "42", "title": "Fix bug", "repo": "owner/repo", "active": false, "closed": false, "devcontainer": "none", "has_children": true },
-            { "id": "43", "title": "Add feature", "repo": "owner/repo", "active": false, "closed": false, "devcontainer": "none", "has_children": false },
+            { "id": "main", "title": "main", "repo": "owner/repo", "active": false, "closed": false, "devcontainer": "none", "has_children": false, "orphan": false },
+            { "id": "42", "title": "Fix bug", "repo": "owner/repo", "active": false, "closed": false, "devcontainer": "none", "has_children": true, "orphan": false },
+            { "id": "43", "title": "Add feature", "repo": "owner/repo", "active": false, "closed": false, "devcontainer": "none", "has_children": false, "orphan": false },
         ], "next_cursor": null })
     );
 }
@@ -850,8 +850,8 @@ fn list_issues_falls_back_to_v0_for_legacy_plugins() {
     assert_eq!(
         out.stdout_json(),
         json!({ "issues": [
-            { "id": "main", "title": "main", "repo": "owner/repo", "active": false, "closed": false, "devcontainer": "none", "has_children": false },
-            { "id": "42", "title": "Fix bug", "repo": "owner/repo", "active": false, "closed": false, "devcontainer": "none", "has_children": false },
+            { "id": "main", "title": "main", "repo": "owner/repo", "active": false, "closed": false, "devcontainer": "none", "has_children": false, "orphan": false },
+            { "id": "42", "title": "Fix bug", "repo": "owner/repo", "active": false, "closed": false, "devcontainer": "none", "has_children": false, "orphan": false },
         ], "next_cursor": null })
     );
     let invocations = env.invocations();
@@ -882,8 +882,8 @@ fn cross_repo_children_carry_their_home_repo() {
     assert_eq!(
         out.stdout_json(),
         json!({ "issues": [
-            { "id": "421", "title": "Same repo", "repo": "owner/repo", "active": false, "closed": false, "devcontainer": "none", "has_children": false },
-            { "id": "9", "title": "In lib", "repo": "owner/lib", "active": true, "closed": false, "devcontainer": "running", "has_children": false },
+            { "id": "421", "title": "Same repo", "repo": "owner/repo", "active": false, "closed": false, "devcontainer": "none", "has_children": false, "orphan": false },
+            { "id": "9", "title": "In lib", "repo": "owner/lib", "active": true, "closed": false, "devcontainer": "running", "has_children": false, "orphan": false },
         ], "next_cursor": null })
     );
 }
@@ -941,8 +941,8 @@ fn list_group_issues_spans_repositories() {
     assert_eq!(
         out.stdout_json(),
         json!({ "issues": [
-            { "id": "42", "title": "App task", "repo": "owner/repo", "active": false, "closed": false, "devcontainer": "none", "has_children": true },
-            { "id": "9", "title": "Lib task", "repo": "owner/lib", "active": true, "closed": false, "devcontainer": "none", "has_children": false },
+            { "id": "42", "title": "App task", "repo": "owner/repo", "active": false, "closed": false, "devcontainer": "none", "has_children": true, "orphan": false },
+            { "id": "9", "title": "Lib task", "repo": "owner/lib", "active": true, "closed": false, "devcontainer": "none", "has_children": false, "orphan": false },
         ], "next_cursor": "page2==" })
     );
 }
@@ -984,15 +984,15 @@ fn list_issues_pages_through_v2_plugins() {
     assert_eq!(
         first.stdout_json(),
         json!({ "issues": [
-            { "id": "main", "title": "main", "repo": "owner/repo", "active": false, "closed": false, "devcontainer": "none", "has_children": false },
-            { "id": "42", "title": "Newest", "repo": "owner/repo", "active": false, "closed": false, "devcontainer": "none", "has_children": false },
+            { "id": "main", "title": "main", "repo": "owner/repo", "active": false, "closed": false, "devcontainer": "none", "has_children": false, "orphan": false },
+            { "id": "42", "title": "Newest", "repo": "owner/repo", "active": false, "closed": false, "devcontainer": "none", "has_children": false, "orphan": false },
         ], "next_cursor": "abc==" })
     );
     assert_eq!(second.status, Some(0));
     assert_eq!(
         second.stdout_json(),
         json!({ "issues": [
-            { "id": "41", "title": "Older", "repo": "owner/repo", "active": false, "closed": false, "devcontainer": "none", "has_children": false },
+            { "id": "41", "title": "Older", "repo": "owner/repo", "active": false, "closed": false, "devcontainer": "none", "has_children": false, "orphan": false },
         ], "next_cursor": null })
     );
 }
@@ -1032,8 +1032,8 @@ fn list_issues_with_parent_lists_children_only() {
     assert_eq!(
         out.stdout_json(),
         json!({ "issues": [
-            { "id": "421", "title": "Child A", "repo": "owner/repo", "active": false, "closed": false, "devcontainer": "none", "has_children": true },
-            { "id": "422", "title": "Child B", "repo": "owner/repo", "active": false, "closed": false, "devcontainer": "none", "has_children": false },
+            { "id": "421", "title": "Child A", "repo": "owner/repo", "active": false, "closed": false, "devcontainer": "none", "has_children": true, "orphan": false },
+            { "id": "422", "title": "Child B", "repo": "owner/repo", "active": false, "closed": false, "devcontainer": "none", "has_children": false, "orphan": false },
         ], "next_cursor": null })
     );
 }
@@ -1070,10 +1070,10 @@ fn list_issues_shows_orphaned_worktrees_with_real_state_in_worktree_order() {
     assert_eq!(
         out.stdout_json(),
         json!({ "issues": [
-            { "id": "main", "title": "main", "repo": "owner/repo", "active": false, "closed": false, "devcontainer": "none", "has_children": false },
-            { "id": "43", "title": "Other work", "repo": "owner/repo", "active": false, "closed": false, "devcontainer": "none", "has_children": false },
-            { "id": "41", "title": "Old bug", "repo": "owner/repo", "active": true, "closed": true, "devcontainer": "none", "has_children": false },
-            { "id": "42", "title": "Deep child", "repo": "owner/repo", "active": true, "closed": false, "devcontainer": "none", "has_children": false },
+            { "id": "main", "title": "main", "repo": "owner/repo", "active": false, "closed": false, "devcontainer": "none", "has_children": false, "orphan": false },
+            { "id": "43", "title": "Other work", "repo": "owner/repo", "active": false, "closed": false, "devcontainer": "none", "has_children": false, "orphan": false },
+            { "id": "41", "title": "Old bug", "repo": "owner/repo", "active": true, "closed": true, "devcontainer": "none", "has_children": false, "orphan": true },
+            { "id": "42", "title": "Deep child", "repo": "owner/repo", "active": true, "closed": false, "devcontainer": "none", "has_children": false, "orphan": true },
         ], "next_cursor": null })
     );
 }
@@ -1101,9 +1101,9 @@ fn list_issues_aggregates_devcontainer_states() {
     assert_eq!(
         out.stdout_json(),
         json!({ "issues": [
-            { "id": "main", "title": "main", "repo": "owner/repo", "active": false, "closed": false, "devcontainer": "none", "has_children": false },
-            { "id": "42", "title": "Fix bug", "repo": "owner/repo", "active": false, "closed": false, "devcontainer": "stopped", "has_children": false },
-            { "id": "43", "title": "Add feature", "repo": "owner/repo", "active": false, "closed": false, "devcontainer": "running", "has_children": false },
+            { "id": "main", "title": "main", "repo": "owner/repo", "active": false, "closed": false, "devcontainer": "none", "has_children": false, "orphan": false },
+            { "id": "42", "title": "Fix bug", "repo": "owner/repo", "active": false, "closed": false, "devcontainer": "stopped", "has_children": false, "orphan": false },
+            { "id": "43", "title": "Add feature", "repo": "owner/repo", "active": false, "closed": false, "devcontainer": "running", "has_children": false, "orphan": false },
         ], "next_cursor": null })
     );
 }
@@ -1124,7 +1124,7 @@ fn list_issues_preserves_backslash_sequences_in_titles() {
     assert_eq!(out.status, Some(0));
     assert_eq!(
         out.stdout_json()["issues"][1],
-        json!({ "id": "42", "title": "Keep \\t literal", "repo": "owner/repo", "active": false, "closed": false, "devcontainer": "none", "has_children": false })
+        json!({ "id": "42", "title": "Keep \\t literal", "repo": "owner/repo", "active": false, "closed": false, "devcontainer": "none", "has_children": false, "orphan": false })
     );
 }
 
@@ -1735,8 +1735,8 @@ fn list_issues_marks_herdr_workspace_as_active() {
     assert_eq!(
         out.stdout_json(),
         json!({ "issues": [
-            { "id": "main", "title": "main", "repo": "owner/repo", "active": true, "closed": false, "devcontainer": "none", "has_children": false },
-            { "id": "42", "title": "Fix bug", "repo": "owner/repo", "active": true, "closed": false, "devcontainer": "none", "has_children": false },
+            { "id": "main", "title": "main", "repo": "owner/repo", "active": true, "closed": false, "devcontainer": "none", "has_children": false, "orphan": false },
+            { "id": "42", "title": "Fix bug", "repo": "owner/repo", "active": true, "closed": false, "devcontainer": "none", "has_children": false, "orphan": false },
         ], "next_cursor": null })
     );
 }
@@ -2079,7 +2079,7 @@ fn list_issues_degrades_to_main_when_tracker_fails() {
     assert_eq!(
         out.stdout_json(),
         json!({ "issues": [
-            { "id": "main", "title": "main", "repo": "owner/repo", "active": false, "closed": false, "devcontainer": "none", "has_children": false },
+            { "id": "main", "title": "main", "repo": "owner/repo", "active": false, "closed": false, "devcontainer": "none", "has_children": false, "orphan": false },
         ], "next_cursor": null })
     );
     assert_eq!(out.stderr, "");

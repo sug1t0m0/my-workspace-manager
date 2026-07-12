@@ -81,6 +81,7 @@ pub fn list_group_issues(
                 false,
                 devcontainer::state(&repo, &item.id),
                 item.has_children,
+                false,
             ))
         })
         .collect();
@@ -248,7 +249,7 @@ pub fn list_issues(
                 devcontainer::state(repo, &item.id).to_owned(),
             ),
         };
-        issue_entry(&item.id, &item.title, item_repo, active, false, &dc, item.has_children)
+        issue_entry(&item.id, &item.title, item_repo, active, false, &dc, item.has_children, false)
     });
 
     // main と孤児 worktree はトップレベルの最初のページにだけ出す
@@ -268,6 +269,7 @@ pub fn list_issues(
         false,
         devcontainer::state(repo, "main"),
         false,
+        false,
     );
 
     // 孤児 worktree: 最初のページに出てこないがセッションが残っている Issue。
@@ -281,7 +283,7 @@ pub fn list_issues(
             let (title, closed) = plugin
                 .and_then(|t| tracker::issue(t, repo, id))
                 .unwrap_or_else(|| ("unknown".to_owned(), true));
-            issue_entry(id, &title, &ns_repo, true, closed, devcontainer::state(repo, id), false)
+            issue_entry(id, &title, &ns_repo, true, closed, devcontainer::state(repo, id), false, true)
         });
 
     Ok(json!({
@@ -438,10 +440,11 @@ fn issue_entry(
     closed: bool,
     dc: &str,
     has_children: bool,
+    orphan: bool,
 ) -> Value {
     json!({
         "id": id, "title": title, "repo": repo, "active": active, "closed": closed,
-        "devcontainer": dc, "has_children": has_children,
+        "devcontainer": dc, "has_children": has_children, "orphan": orphan,
     })
 }
 

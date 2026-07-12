@@ -258,11 +258,14 @@ _pick_workspace() {
       [[ -n "$fetch_cursor" ]] && query+=(--cursor "$fetch_cursor")
       local json=$(_server "${query[@]}")
 
-      while IFS=$'\t' read -r id title repo active closed dc children; do
+      while IFS=$'\t' read -r id title repo active closed dc children orphan; do
         [[ -n "$id" ]] || continue
-        # 子の有無 (▸) は行頭に出す。行末だと長いタイトルの切り詰めで見えなくなる
+        # マーカーは行頭に出す (行末だと長いタイトルの切り詰めで見えなくなる)。
+        # ▸ = 子 Issue あり、↳ = 一覧の外から浮上した作業中の workspace
+        # (階層の一部ではない)
         local marker="  "
         [[ "$children" == "true" ]] && marker="▸ "
+        [[ "$orphan" == "true" ]] && marker="↳ "
         local display=""
         if [[ "$id" == "main" ]]; then
           display="${marker}main  (ディスカッション・調査用)"
@@ -281,7 +284,7 @@ _pick_workspace() {
         [[ -n "$dc_disp" ]] && display+="  ${dc_disp}"
         acc+=("${repo}${TAB}${id}${TAB}${display}${TAB}${children}")
       done < <(printf '%s\n' "$json" \
-        | jq -r '.issues[] | "\(.id)\t\(.title)\t\(.repo)\t\(.active)\t\(.closed)\t\(.devcontainer // "none")\t\(.has_children // false)"')
+        | jq -r '.issues[] | "\(.id)\t\(.title)\t\(.repo)\t\(.active)\t\(.closed)\t\(.devcontainer // "none")\t\(.has_children // false)\t\(.orphan // false)"')
 
       cursor=$(printf '%s\n' "$json" | jq -r '.next_cursor // empty')
       need_fetch=0
