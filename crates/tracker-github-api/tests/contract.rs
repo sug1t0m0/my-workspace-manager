@@ -134,6 +134,7 @@ impl TestEnv {
             .env_remove("WSM_TRACKER_OWNER")
             .env_remove("WSM_TRACKER_GITHUB_OWNER")
             .env_remove("WSM_TRACKER_ROOT_LABEL")
+            .env_remove("WSM_TRACKER_GROUPS")
             .envs(envs.iter().copied())
             .output()
             .expect("run wsm-tracker-github-api");
@@ -364,6 +365,78 @@ fn list_issues_v2_last_page_has_no_cursor() {
     // Assert
     assert_eq!(out.status, Some(0));
     assert_eq!(out.stdout_json(), json!({ "issues": [], "next_cursor": null }));
+}
+
+#[test]
+fn groups_key_limits_repo_group_listing() {
+    // Arrange: org には Project が 3 つあるが、groups = "12,15" で 2 つに限定
+    let server = ApiServer::serve(vec![(
+        "",
+        json!({ "data": { "repositoryOwner": { "projectsV2": { "nodes": [
+            { "number": 12, "title": "Aチーム", "closed": false },
+            { "number": 15, "title": "Bチーム", "closed": false },
+            { "number": 8, "title": "開発項目", "closed": false },
+        ] } } } })
+        .to_string(),
+    )]);
+    let env = TestEnv::new();
+
+    // Act
+    let out = env.run_env(
+        &server.url,
+        &["list-repo-groups-v0"],
+        &[("WSM_TRACKER_GITHUB_OWNER", "acme"), ("WSM_TRACKER_GROUPS", "12, 15")],
+    );
+
+    // Assert
+    assert_eq!(out.status, Some(0));
+    assert_eq!(
+        out.stdout_json(),
+        json!([{ "id": "12", "title": "Aチーム" }, { "id": "15", "title": "Bチーム" }])
+    );
+}
+
+#[test]
+fn group_issues_skip_pages_without_matches() {
+    // Arrange: 1 ページ目は closed とラベル外だけ (一致 0)。プラグインが
+    // 内部で次ページへ進み、一致の見つかったページで止まる
+    let page1 = json!({ "data": { "repositoryOwner": { "projectV2": { "items": {
+        "pageInfo": { "endCursor": "p2", "hasNextPage": true },
+        "nodes": [
+            { "content": { "number": 1, "title": "Done", "state": "CLOSED", "parent": null, "repository": { "nameWithOwner": "acme/a" }, "labels": { "nodes": [{ "name": "@me" }] }, "subIssues": { "nodes": [] } } },
+            { "content": { "number": 2, "title": "Other's", "state": "OPEN", "parent": null, "repository": { "nameWithOwner": "acme/a" }, "labels": { "nodes": [] }, "subIssues": { "nodes": [] } } },
+        ],
+    } } } } })
+    .to_string();
+    let page2 = json!({ "data": { "repositoryOwner": { "projectV2": { "items": {
+        "pageInfo": { "endCursor": "p3", "hasNextPage": true },
+        "nodes": [
+            { "content": { "number": 2268, "title": "Mine", "state": "OPEN", "parent": null, "repository": { "nameWithOwner": "acme/a" }, "labels": { "nodes": [{ "name": "@me" }] }, "subIssues": { "nodes": [] } } },
+        ],
+    } } } } })
+    .to_string();
+    let server = ApiServer::serve(vec![("", page1), ("", page2)]);
+    let env = TestEnv::new();
+
+    // Act: 1 回の呼び出しで 2 ページ読み進める
+    let out = env.run_env(
+        &server.url,
+        &["list-group-issues-v0", "--group", "12"],
+        &[("WSM_TRACKER_GITHUB_OWNER", "acme"), ("WSM_TRACKER_ROOT_LABEL", "@me")],
+    );
+
+    // Assert: 一致 (2268) と、続きの cursor が返る
+    assert_eq!(out.status, Some(0));
+    assert_eq!(
+        out.stdout_json(),
+        json!({
+            "issues": [{ "id": "2268", "title": "Mine", "repo": "acme/a", "has_children": false }],
+            "next_cursor": "p3",
+        })
+    );
+    let requests = server.requests();
+    assert_eq!(requests.len(), 2, "must advance past the empty page");
+    assert!(requests[1].contains(r#""cursor":"p2""#), "second fetch must continue from p2");
 }
 
 #[test]

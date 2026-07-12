@@ -73,6 +73,9 @@ fn run(args: &[String]) -> Result<Value, String> {
 // --- 動詞 ---
 
 /// open な repo-group の {id, title} の列 (GitHub での実体は Projects V2)。
+/// 設定 `groups` (WSM_TRACKER_GROUPS、カンマ区切りの id) があるときは
+/// 列挙された Project だけに絞る (organization の全 Project は多すぎるため、
+/// 自分に関係のあるボードだけを出す)。
 fn list_repo_groups() -> Result<Value, String> {
     const QUERY: &str = "query($owner: String!) {
       repositoryOwner(login: $owner) {
@@ -81,6 +84,7 @@ fn list_repo_groups() -> Result<Value, String> {
       }
     }";
     let owner = owner()?;
+    let allowed = allowed_groups();
     let data = graphql(QUERY, json!({ "owner": owner }))?;
     let groups = data["repositoryOwner"]["projectsV2"]["nodes"]
         .as_array()
@@ -90,12 +94,23 @@ fn list_repo_groups() -> Result<Value, String> {
                 .filter(|p| p["closed"].as_bool() != Some(true))
                 .filter_map(|p| {
                     let number = p["number"].as_u64()?;
-                    Some(json!({ "id": number.to_string(), "title": p["title"].as_str()? }))
+                    match &allowed {
+                        Some(ids) if !ids.iter().any(|id| id == &number.to_string()) => None,
+                        _ => Some(
+                            json!({ "id": number.to_string(), "title": p["title"].as_str()? }),
+                        ),
+                    }
                 })
                 .collect()
         })
         .unwrap_or_default();
     Ok(Value::Array(groups))
+}
+
+/// 表示する repo-group の限定 ([[tracker]] の拡張キー groups。カンマ区切りの id)。
+fn allowed_groups() -> Option<Vec<String>> {
+    let raw = std::env::var("WSM_TRACKER_GROUPS").ok().filter(|v| !v.is_empty())?;
+    Some(raw.split(',').map(str::trim).filter(|v| !v.is_empty()).map(str::to_owned).collect())
 }
 
 /// repo-group (= GitHub Project) に属するリポジトリの ns_repo の列。
@@ -164,6 +179,11 @@ fn list_issues_page(
 /// 付いた Issue だけに絞る。組織の Project は全員の項目が並んでノイジーな
 /// ため、ルート Issue (エピック等) にラベルで印を付け、そこから既存の
 /// 階層ドリルで open な子孫を辿る、という運用のための入り口。
+///
+/// closed やフィルタ外の item で埋まって**一致が 0 件になった API ページは
+/// 内部で読み進める** (一致が見つかったページで止めて cursor を返す)。
+/// さもないと疎らなラベルでは「空のページ + さらに読み込む」ばかりになり、
+/// 一致が存在しないように見えてしまう。
 fn list_group_issues(group: &str, cursor: Option<String>) -> Result<Value, String> {
     const QUERY: &str = "query($owner: String!, $num: Int!, $cursor: String) {
       repositoryOwner(login: $owner) {
@@ -177,27 +197,39 @@ fn list_group_issues(group: &str, cursor: Option<String>) -> Result<Value, Strin
         } } }
       }
     }";
+    const MAX_PAGES: usize = 40; // 暴走ガード (items 2000 件まで走査)
+
     let number = numeric(group, "group")?;
     let owner = owner()?;
-    let data = graphql(
-        QUERY,
-        json!({ "owner": owner, "num": number, "cursor": cursor }),
-    )?;
     let root_label = root_label();
-    let (nodes, next_cursor) = page(&data["repositoryOwner"]["projectV2"]["items"]);
-    let issues: Vec<Value> = nodes
-        .iter()
-        .map(|n| &n["content"])
-        .filter(|c| c["state"].as_str() == Some("OPEN"))
-        .filter(|c| match &root_label {
-            None => true,
-            Some(label) => c["labels"]["nodes"]
-                .as_array()
-                .is_some_and(|labels| labels.iter().any(|l| l["name"].as_str() == Some(label))),
-        })
-        .filter_map(|c| issue_item(c, true))
-        .collect();
-    Ok(json!({ "issues": issues, "next_cursor": next_cursor }))
+
+    let mut issues: Vec<Value> = Vec::new();
+    let mut cursor = cursor;
+    for _ in 0..MAX_PAGES {
+        let data = graphql(
+            QUERY,
+            json!({ "owner": owner, "num": number, "cursor": cursor }),
+        )?;
+        let (nodes, next_cursor) = page(&data["repositoryOwner"]["projectV2"]["items"]);
+        issues.extend(
+            nodes
+                .iter()
+                .map(|n| &n["content"])
+                .filter(|c| c["state"].as_str() == Some("OPEN"))
+                .filter(|c| match &root_label {
+                    None => true,
+                    Some(label) => c["labels"]["nodes"].as_array().is_some_and(|labels| {
+                        labels.iter().any(|l| l["name"].as_str() == Some(label))
+                    }),
+                })
+                .filter_map(|c| issue_item(c, true)),
+        );
+        cursor = next_cursor;
+        if cursor.is_none() || !issues.is_empty() {
+            break;
+        }
+    }
+    Ok(json!({ "issues": issues, "next_cursor": cursor }))
 }
 
 /// ルート Issue のラベル ([[tracker]] の拡張キー root_label)。

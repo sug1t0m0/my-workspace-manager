@@ -47,6 +47,7 @@ path = "~/.local/bin/wsm-tracker-github-api"
 # ns = "acme-corp,acme-labs"   # この ns のリポジトリの既定トラッカーになる
 # root_label = "wsm-root"      # → WSM_TRACKER_ROOT_LABEL (このラベルの付いた
 #                              #   ルート Issue だけをグループ一覧に出す)
+# groups = "12,15"             # → WSM_TRACKER_GROUPS (表示する Project id の限定)
 
 # ghq 管理外のリポジトリの登録 (複数可)。識別子は <ns>/<name> になり、
 # worktree は <worktree_root>/<host>/<ns>/<name>/<id> に作られる (ghq のものと共通)。
