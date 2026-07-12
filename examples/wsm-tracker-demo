@@ -89,9 +89,9 @@ case "$verb" in
     if [ -n "${WSM_TRACKER_ROOT_LABEL:-}" ]; then
       echo '{"issues":[{"id":"100","title":"Epic: demo migration","repo":"demo/app","has_children":true}],"next_cursor":null}'
     else
-      # 110 は has_parent (Project に直接入った子 Issue)。作業中でなければ
+      # 110 は親 (#100) が同じ一覧に居る子 Issue。作業中でなければ
       # トップに出ない (ドリルとの重複回避) 挙動の確認用
-      echo '{"issues":[{"id":"100","title":"Epic: demo migration","repo":"demo/app","has_children":true},{"id":"200","title":"Lib: rework parser","repo":"demo/lib"},{"id":"110","title":"Child: extract module","repo":"demo/app","has_parent":true}],"next_cursor":null}'
+      echo '{"issues":[{"id":"100","title":"Epic: demo migration","repo":"demo/app","has_children":true},{"id":"200","title":"Lib: rework parser","repo":"demo/lib"},{"id":"110","title":"Child: extract module","repo":"demo/app","parent":{"repo":"demo/app","id":"100"}}],"next_cursor":null}'
     fi
     ;;
 

@@ -924,15 +924,16 @@ fn unregistered_repo_issues_are_still_queryable() {
 #[test]
 fn list_group_issues_spans_repositories() {
     // Arrange: repo-group 横断の Issue 一覧 (Issue 起点フローのトップレベル)。
-    // 各要素の repo は必須で、欠落した要素は捨てる。has_parent の item
+    // 各要素の repo は必須で、欠落した要素は捨てる。親が同じ一覧に居る item
     // (Project に直接入った子 Issue) は、作業中 (9) なら孤児として浮上し、
-    // 作業中でない (77) ならドリルとの重複を避けるため出ない
+    // 作業中でない (77) ならドリルとの重複を避けるため出ない。
+    // 親が一覧に居ない 88 はサブツリーの入り口として残る
     let env = TestEnv::new();
     env.stub("^docker ps -a", "")
         .stub("^tmux has-session -t =owner_lib_9$", "")
         .stub(
             "^tracker list-group-issues-v0 --group 5$",
-            r#"{"issues":[{"id":"42","title":"App task","repo":"owner/repo","has_children":true},{"id":"9","title":"Lib task","repo":"owner/lib","has_parent":true},{"id":"77","title":"Someone's child","repo":"owner/repo","has_parent":true},{"id":"1","title":"No repo"}],"next_cursor":"page2=="}"#,
+            r#"{"issues":[{"id":"42","title":"App task","repo":"owner/repo","has_children":true},{"id":"9","title":"Lib task","repo":"owner/lib","parent":{"repo":"owner/repo","id":"42"}},{"id":"77","title":"Someone's child","repo":"owner/repo","parent":{"repo":"owner/repo","id":"42"}},{"id":"88","title":"Subtree entry","repo":"owner/repo","parent":{"repo":"owner/umbrella","id":"999"}},{"id":"1","title":"No repo"}],"next_cursor":"page2=="}"#,
         );
 
     // Act
@@ -945,6 +946,7 @@ fn list_group_issues_spans_repositories() {
         json!({ "issues": [
             { "id": "42", "title": "App task", "repo": "owner/repo", "active": false, "closed": false, "devcontainer": "none", "has_children": true, "orphan": false },
             { "id": "9", "title": "Lib task", "repo": "owner/lib", "active": true, "closed": false, "devcontainer": "none", "has_children": false, "orphan": true },
+            { "id": "88", "title": "Subtree entry", "repo": "owner/repo", "active": false, "closed": false, "devcontainer": "none", "has_children": false, "orphan": false },
         ], "next_cursor": "page2==" })
     );
 }

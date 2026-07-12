@@ -169,11 +169,11 @@ fn list_group_issues(group: &str, cursor: Option<String>) -> Result<Value, Strin
       repositoryOwner(login: $owner) {
         ... on User { projectV2(number: $num) { items(first: 50, after: $cursor) {
           pageInfo { endCursor hasNextPage }
-          nodes { content { ... on Issue { number title state parent { number } repository { nameWithOwner } labels(first: 20) { nodes { name } } subIssues(first: 50) { nodes { state } } } } }
+          nodes { content { ... on Issue { number title state parent { number repository { nameWithOwner } } repository { nameWithOwner } labels(first: 20) { nodes { name } } subIssues(first: 50) { nodes { state } } } } }
         } } }
         ... on Organization { projectV2(number: $num) { items(first: 50, after: $cursor) {
           pageInfo { endCursor hasNextPage }
-          nodes { content { ... on Issue { number title state parent { number } repository { nameWithOwner } labels(first: 20) { nodes { name } } subIssues(first: 50) { nodes { state } } } } }
+          nodes { content { ... on Issue { number title state parent { number repository { nameWithOwner } } repository { nameWithOwner } labels(first: 20) { nodes { name } } subIssues(first: 50) { nodes { state } } } } }
         } } }
       }
     }";
@@ -320,10 +320,14 @@ fn issue_item(node: &Value, hierarchical: bool) -> Option<Value> {
     if let Some(repo) = node["repository"]["nameWithOwner"].as_str() {
         item["repo"] = Value::from(repo);
     }
-    // 親を持つ item (Project に子 Issue が直接入っているケース) は名乗る。
-    // wsm がトップレベルの重複 (ドリルにも出る) を避けるのに使う
-    if !node["parent"].is_null() {
-        item["has_parent"] = Value::from(true);
+    // 親を持つ item (Project に子 Issue が直接入っているケース) は親の識別を
+    // 名乗る。wsm は「親が同じ一覧に居る item」だけをトップから隠す
+    // (居なければその item がサブツリーの入り口になる)
+    if let (Some(parent_number), Some(parent_repo)) = (
+        node["parent"]["number"].as_u64(),
+        node["parent"]["repository"]["nameWithOwner"].as_str(),
+    ) {
+        item["parent"] = json!({ "repo": parent_repo, "id": parent_number.to_string() });
     }
     Some(item)
 }

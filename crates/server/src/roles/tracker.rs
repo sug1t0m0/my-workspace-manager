@@ -56,8 +56,10 @@ pub struct IssueItem {
     pub id: String,
     pub title: String,
     pub has_children: bool,
-    pub has_parent: bool,
     pub repo: Option<String>,
+    /// 親 Issue の識別 (repo, id)。グループビューの重複判定にだけ使う。
+    /// 形の不正な値は「親情報なし」に落とす (表示側に倒す)。
+    pub parent: Option<(String, String)>,
 }
 
 /// open な Issue の 1 ページ。(一覧, 続きの cursor) を返す。取得できなければ空。
@@ -148,12 +150,17 @@ fn issue_items(items: &[Value], hierarchical: bool) -> Vec<IssueItem> {
                 Value::String(repo) => Some(RepoRef::parse(repo)?.ns_repo()),
                 _ => return None,
             };
+            let parent = item["parent"]["repo"]
+                .as_str()
+                .and_then(|r| RepoRef::parse(r))
+                .zip(item["parent"]["id"].as_str().filter(|id| valid_issue_id(id)))
+                .map(|(repo, id)| (repo.ns_repo(), id.to_owned()));
             Some(IssueItem {
                 id: id.to_owned(),
                 title: title.to_owned(),
                 has_children: hierarchical && item["has_children"].as_bool().unwrap_or(false),
-                has_parent: item["has_parent"].as_bool().unwrap_or(false),
                 repo,
+                parent,
             })
         })
         .collect()

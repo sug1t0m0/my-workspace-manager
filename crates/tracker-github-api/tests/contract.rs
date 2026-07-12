@@ -224,7 +224,7 @@ fn list_group_issues_maps_project_items_across_repos() {
             "pageInfo": { "endCursor": "pi==", "hasNextPage": true },
             "nodes": [
                 { "content": { "number": 42, "title": "App task", "state": "OPEN", "parent": null, "repository": { "nameWithOwner": "owner/repo" }, "subIssues": { "nodes": [{ "state": "OPEN" }] } } },
-                { "content": { "number": 9, "title": "Lib task", "state": "OPEN", "parent": { "number": 42 }, "repository": { "nameWithOwner": "owner/lib" }, "subIssues": { "nodes": [] } } },
+                { "content": { "number": 9, "title": "Lib task", "state": "OPEN", "parent": { "number": 42, "repository": { "nameWithOwner": "owner/repo" } }, "repository": { "nameWithOwner": "owner/lib" }, "subIssues": { "nodes": [] } } },
                 { "content": { "number": 1, "title": "Done", "state": "CLOSED", "parent": null, "repository": { "nameWithOwner": "owner/repo" }, "subIssues": { "nodes": [] } } },
                 { "content": {} },
             ],
@@ -248,7 +248,7 @@ fn list_group_issues_maps_project_items_across_repos() {
         json!({
             "issues": [
                 { "id": "42", "title": "App task", "repo": "owner/repo", "has_children": true },
-                { "id": "9", "title": "Lib task", "repo": "owner/lib", "has_children": false, "has_parent": true },
+                { "id": "9", "title": "Lib task", "repo": "owner/lib", "has_children": false, "parent": { "repo": "owner/repo", "id": "42" } },
             ],
             "next_cursor": "pi==",
         })
@@ -271,13 +271,14 @@ fn list_issues_v0_returns_flat_list() {
     // Act
     let out = env.run(&server.url, &["list-issues-v0", "--repo", "owner/repo"]);
 
-    // Assert: has_parent は互換な追加フィールド (古い wsm は無視する)
+    // Assert: 親の repo が取れないノード (v0 の repository.issues) では
+    // parent フィールドは付かない
     assert_eq!(out.status, Some(0));
     assert_eq!(
         out.stdout_json(),
         json!([
             { "id": "100", "title": "Epic", "has_children": false },
-            { "id": "110", "title": "Child", "has_children": false, "has_parent": true },
+            { "id": "110", "title": "Child", "has_children": false },
         ])
     );
 }

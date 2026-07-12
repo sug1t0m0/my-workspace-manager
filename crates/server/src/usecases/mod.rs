@@ -64,6 +64,14 @@ pub fn list_group_issues(
     let managers = settings::session_managers(home);
     let (issues, next_cursor) = tracker::group_issues(plugin, group, cursor.as_deref());
 
+    // 同じ応答に親が居る item は、ドリルで親の下にも出るためトップから隠す
+    // (親が居なければサブツリーの入り口として残す)。作業中のものは隠さず
+    // 孤児として浮上させる (リポジトリビューと同じ規則)
+    let fetched: HashSet<(&str, &str)> = issues
+        .iter()
+        .filter_map(|item| Some((item.repo.as_deref()?, item.id.as_str())))
+        .collect();
+
     let rows: Vec<Value> = issues
         .iter()
         .filter_map(|item| {
@@ -74,10 +82,11 @@ pub fn list_group_issues(
                 &WorkspaceId::Issue(item.id.clone()),
                 &managers,
             );
-            // 親を持つ item (Project に子 Issue が直接入っているケース) は
-            // ドリルにも出るため、トップレベルには出さない。ただし作業中の
-            // ものは孤児として浮上させる (リポジトリビューと同じ規則)
-            if item.has_parent && !active {
+            let parent_fetched = item
+                .parent
+                .as_ref()
+                .is_some_and(|(repo, id)| fetched.contains(&(repo.as_str(), id.as_str())));
+            if parent_fetched && !active {
                 return None;
             }
             Some(issue_entry(
@@ -88,7 +97,7 @@ pub fn list_group_issues(
                 false,
                 devcontainer::state(&repo, &item.id),
                 item.has_children,
-                item.has_parent,
+                parent_fetched,
             ))
         })
         .collect();
