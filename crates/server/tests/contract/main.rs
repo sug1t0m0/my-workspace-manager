@@ -924,25 +924,27 @@ fn unregistered_repo_issues_are_still_queryable() {
 #[test]
 fn list_group_issues_spans_repositories() {
     // Arrange: repo-group 横断の Issue 一覧 (Issue 起点フローのトップレベル)。
-    // 各要素の repo は必須で、欠落した要素は捨てる
+    // 各要素の repo は必須で、欠落した要素は捨てる。has_parent の item
+    // (Project に直接入った子 Issue) は、作業中 (9) なら孤児として浮上し、
+    // 作業中でない (77) ならドリルとの重複を避けるため出ない
     let env = TestEnv::new();
     env.stub("^docker ps -a", "")
         .stub("^tmux has-session -t =owner_lib_9$", "")
         .stub(
             "^tracker list-group-issues-v0 --group 5$",
-            r#"{"issues":[{"id":"42","title":"App task","repo":"owner/repo","has_children":true},{"id":"9","title":"Lib task","repo":"owner/lib"},{"id":"1","title":"No repo"}],"next_cursor":"page2=="}"#,
+            r#"{"issues":[{"id":"42","title":"App task","repo":"owner/repo","has_children":true},{"id":"9","title":"Lib task","repo":"owner/lib","has_parent":true},{"id":"77","title":"Someone's child","repo":"owner/repo","has_parent":true},{"id":"1","title":"No repo"}],"next_cursor":"page2=="}"#,
         );
 
     // Act
     let out = env.run(&["list-group-issues", "--group", "5"]);
 
-    // Assert: main・孤児はリポジトリ単位の概念なので出ない
+    // Assert: main はリポジトリ単位の概念なので出ない
     assert_eq!(out.status, Some(0));
     assert_eq!(
         out.stdout_json(),
         json!({ "issues": [
             { "id": "42", "title": "App task", "repo": "owner/repo", "active": false, "closed": false, "devcontainer": "none", "has_children": true, "orphan": false },
-            { "id": "9", "title": "Lib task", "repo": "owner/lib", "active": true, "closed": false, "devcontainer": "none", "has_children": false, "orphan": false },
+            { "id": "9", "title": "Lib task", "repo": "owner/lib", "active": true, "closed": false, "devcontainer": "none", "has_children": false, "orphan": true },
         ], "next_cursor": "page2==" })
     );
 }

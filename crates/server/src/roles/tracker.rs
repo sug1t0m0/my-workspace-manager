@@ -56,6 +56,7 @@ pub struct IssueItem {
     pub id: String,
     pub title: String,
     pub has_children: bool,
+    pub has_parent: bool,
     pub repo: Option<String>,
 }
 
@@ -151,6 +152,7 @@ fn issue_items(items: &[Value], hierarchical: bool) -> Vec<IssueItem> {
                 id: id.to_owned(),
                 title: title.to_owned(),
                 has_children: hierarchical && item["has_children"].as_bool().unwrap_or(false),
+                has_parent: item["has_parent"].as_bool().unwrap_or(false),
                 repo,
             })
         })

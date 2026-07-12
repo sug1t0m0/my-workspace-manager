@@ -49,9 +49,10 @@ pub fn list_repo_groups(home: &Path) -> CmdResult {
 
 /// repo-group に属する open な Issue の 1 ページ (リポジトリ横断)。
 /// Issue 起点フローのトップレベル。--tracker でグループを持つインスタンスを
-/// 指定する (省略時は既定)。main や孤児 worktree の概念はリポジトリ単位の
-/// ものなので、ここには出ない。active はセッションの有無 (worktree の
-/// 検査はリポジトリごとのクローンが要るため、ここでは行わない)。
+/// 指定する (省略時は既定)。main の概念はリポジトリ単位のものなので出ない。
+/// active はセッションの有無 (worktree の検査はリポジトリごとのクローンが
+/// 要るため、ここでは行わない)。親を持つ item はドリルとの重複を避けるため
+/// トップに出さず、作業中のものだけ孤児 (orphan) として浮上させる。
 pub fn list_group_issues(
     home: &Path,
     group: &str,
@@ -73,6 +74,12 @@ pub fn list_group_issues(
                 &WorkspaceId::Issue(item.id.clone()),
                 &managers,
             );
+            // 親を持つ item (Project に子 Issue が直接入っているケース) は
+            // ドリルにも出るため、トップレベルには出さない。ただし作業中の
+            // ものは孤児として浮上させる (リポジトリビューと同じ規則)
+            if item.has_parent && !active {
+                return None;
+            }
             Some(issue_entry(
                 &item.id,
                 &item.title,
@@ -81,7 +88,7 @@ pub fn list_group_issues(
                 false,
                 devcontainer::state(&repo, &item.id),
                 item.has_children,
-                false,
+                item.has_parent,
             ))
         })
         .collect();

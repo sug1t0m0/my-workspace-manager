@@ -223,9 +223,9 @@ fn list_group_issues_maps_project_items_across_repos() {
         json!({ "data": { "repositoryOwner": { "projectV2": { "items": {
             "pageInfo": { "endCursor": "pi==", "hasNextPage": true },
             "nodes": [
-                { "content": { "number": 42, "title": "App task", "state": "OPEN", "repository": { "nameWithOwner": "owner/repo" }, "subIssues": { "nodes": [{ "state": "OPEN" }] } } },
-                { "content": { "number": 9, "title": "Lib task", "state": "OPEN", "repository": { "nameWithOwner": "owner/lib" }, "subIssues": { "nodes": [] } } },
-                { "content": { "number": 1, "title": "Done", "state": "CLOSED", "repository": { "nameWithOwner": "owner/repo" }, "subIssues": { "nodes": [] } } },
+                { "content": { "number": 42, "title": "App task", "state": "OPEN", "parent": null, "repository": { "nameWithOwner": "owner/repo" }, "subIssues": { "nodes": [{ "state": "OPEN" }] } } },
+                { "content": { "number": 9, "title": "Lib task", "state": "OPEN", "parent": { "number": 42 }, "repository": { "nameWithOwner": "owner/lib" }, "subIssues": { "nodes": [] } } },
+                { "content": { "number": 1, "title": "Done", "state": "CLOSED", "parent": null, "repository": { "nameWithOwner": "owner/repo" }, "subIssues": { "nodes": [] } } },
                 { "content": {} },
             ],
         } } } } })
@@ -240,14 +240,15 @@ fn list_group_issues_maps_project_items_across_repos() {
         &[("WSM_TRACKER_GITHUB_OWNER", "me")],
     );
 
-    // Assert: draft や PR の項目 (Issue でない content) は落ちる
+    // Assert: draft や PR の項目 (Issue でない content) は落ち、
+    // 親を持つ item は has_parent を名乗る
     assert_eq!(out.status, Some(0));
     assert_eq!(
         out.stdout_json(),
         json!({
             "issues": [
                 { "id": "42", "title": "App task", "repo": "owner/repo", "has_children": true },
-                { "id": "9", "title": "Lib task", "repo": "owner/lib", "has_children": false },
+                { "id": "9", "title": "Lib task", "repo": "owner/lib", "has_children": false, "has_parent": true },
             ],
             "next_cursor": "pi==",
         })
@@ -270,13 +271,13 @@ fn list_issues_v0_returns_flat_list() {
     // Act
     let out = env.run(&server.url, &["list-issues-v0", "--repo", "owner/repo"]);
 
-    // Assert
+    // Assert: has_parent は互換な追加フィールド (古い wsm は無視する)
     assert_eq!(out.status, Some(0));
     assert_eq!(
         out.stdout_json(),
         json!([
             { "id": "100", "title": "Epic", "has_children": false },
-            { "id": "110", "title": "Child", "has_children": false },
+            { "id": "110", "title": "Child", "has_children": false, "has_parent": true },
         ])
     );
 }

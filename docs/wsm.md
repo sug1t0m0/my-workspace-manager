@@ -491,7 +491,9 @@ remove は逆順で破棄する(Terminal は管理外なので対象外):
 `list-group-issues --group <id> [--tracker <name>] [--cursor <token>]`
 → repo-group に属する open な Issue の 1 ページ (リポジトリ横断)。
 `--tracker` はグループを持つインスタンス (省略時は既定)。Issue 起点フローの
-トップレベル。main・孤児 worktree はリポジトリ単位の概念なので出ない。
+トップレベル。main はリポジトリ単位の概念なので出ない。親を持つ item
+(GitHub は sub-issue を親と同じ Project に自動追加する) はドリルとの重複を
+避けるためトップに出さず、作業中のものだけ `orphan: true` で浮上する。
 プラグイン非対応時は空 (UI はリポジトリ起点フローに落ちる)。
 ```json
 {"issues": [{"id": "42", "title": "...", "repo": "owner/repo", "active": false, "closed": false, "devcontainer": "none", "has_children": false}],
@@ -645,7 +647,7 @@ wsm 本体のリリースを要しないこと、が目的)。
 |---|---|
 | `list-repo-groups-v0` | `[{"id": "...", "title": "..."}]` — open な repo-group。UI の表示順で返す |
 | `repo-group-repos-v0 --group <id>` | `["ns/repo", ...]` — repo-group 所属のリポジトリ |
-| `list-group-issues-v0 --group <id> [--cursor <token>]` | `{"issues": [{"id", "title", "repo", "has_children"}], "next_cursor"}` — repo-group に属する open な Issue の 1 ページ (リポジトリ横断。`repo` 必須) |
+| `list-group-issues-v0 --group <id> [--cursor <token>]` | `{"issues": [{"id", "title", "repo", "has_children", "has_parent"}], "next_cursor"}` — repo-group に属する open な Issue の 1 ページ (リポジトリ横断。`repo` 必須。`has_parent` (省略時 false) は親を持つ item — wsm はドリルとの重複を避けるためトップに出さず、作業中のものだけ孤児として浮上させる) |
 | `list-issues-v2 --repo <ns/repo> [--parent <id>] [--cursor <token>]` | `{"issues": [{"id", "title", "has_children"}], "next_cursor": "<token>" \| null}` — open な Issue の 1 ページ |
 | `list-issues-v1 --repo <ns/repo> [--parent <id>]` | `[{"id": "...", "title": "...", "has_children": bool}]` — v2 非対応プラグイン向け (ページングなしの全件) |
 | `list-issues-v0 --repo <ns/repo>` | `[{"id": "...", "title": "..."}]` — v1 非対応プラグイン向け (平坦な一覧) |
