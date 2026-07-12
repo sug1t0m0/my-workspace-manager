@@ -172,64 +172,34 @@ fn list_issues_page(
 }
 
 /// repo-group (= GitHub Project) に属する open な Issue の 1 ページ。
-/// Projects V2 の items はリポジトリ横断なので、各 Issue に repo を付けて返す。
-/// どの Issue を項目にするかは Project 側の運用に従う (親子での絞り込みはしない)。
+/// リポジトリ横断なので、各 Issue に repo を付けて返す。
+///
+/// Project items の総なめではなく**検索 API に 1 クエリで聞く**
+/// (`is:issue is:open project:<owner>/<num>`)。items 走査はほぼ closed の
+/// 大きなボードで壊滅的に遅く、疎らなラベルでは何ページも空振りする。
+/// 検索は Project 所属もラベルもインデックス済みで一撃。
 ///
 /// 設定 `root_label` (WSM_TRACKER_ROOT_LABEL) があるときは、そのラベルの
-/// 付いた Issue だけに絞る。組織の Project は全員の項目が並んでノイジーな
-/// ため、ルート Issue (エピック等) にラベルで印を付け、そこから既存の
-/// 階層ドリルで open な子孫を辿る、という運用のための入り口。
-///
-/// closed やフィルタ外の item で埋まって**一致が 0 件になった API ページは
-/// 内部で読み進める** (一致が見つかったページで止めて cursor を返す)。
-/// さもないと疎らなラベルでは「空のページ + さらに読み込む」ばかりになり、
-/// 一致が存在しないように見えてしまう。
+/// 付いた Issue だけに絞る (`label:"..."` を検索クエリに足す)。組織の
+/// Project は全員の項目が並んでノイジーなため、ルート Issue (エピック等) に
+/// ラベルで印を付け、そこから既存の階層ドリルで open な子孫を辿る運用の入り口。
 fn list_group_issues(group: &str, cursor: Option<String>) -> Result<Value, String> {
-    const QUERY: &str = "query($owner: String!, $num: Int!, $cursor: String) {
-      repositoryOwner(login: $owner) {
-        ... on User { projectV2(number: $num) { items(first: 50, after: $cursor) {
-          pageInfo { endCursor hasNextPage }
-          nodes { content { ... on Issue { number title state parent { number repository { nameWithOwner } } repository { nameWithOwner } labels(first: 20) { nodes { name } } subIssues(first: 50) { nodes { state } } } } }
-        } } }
-        ... on Organization { projectV2(number: $num) { items(first: 50, after: $cursor) {
-          pageInfo { endCursor hasNextPage }
-          nodes { content { ... on Issue { number title state parent { number repository { nameWithOwner } } repository { nameWithOwner } labels(first: 20) { nodes { name } } subIssues(first: 50) { nodes { state } } } } }
-        } } }
+    const QUERY: &str = "query($q: String!, $cursor: String) {
+      search(query: $q, type: ISSUE, first: 50, after: $cursor) {
+        pageInfo { endCursor hasNextPage }
+        nodes { ... on Issue { number title repository { nameWithOwner } parent { number repository { nameWithOwner } } subIssues(first: 50) { nodes { state } } } }
       }
     }";
-    const MAX_PAGES: usize = 40; // 暴走ガード (items 2000 件まで走査)
-
     let number = numeric(group, "group")?;
     let owner = owner()?;
-    let root_label = root_label();
-
-    let mut issues: Vec<Value> = Vec::new();
-    let mut cursor = cursor;
-    for _ in 0..MAX_PAGES {
-        let data = graphql(
-            QUERY,
-            json!({ "owner": owner, "num": number, "cursor": cursor }),
-        )?;
-        let (nodes, next_cursor) = page(&data["repositoryOwner"]["projectV2"]["items"]);
-        issues.extend(
-            nodes
-                .iter()
-                .map(|n| &n["content"])
-                .filter(|c| c["state"].as_str() == Some("OPEN"))
-                .filter(|c| match &root_label {
-                    None => true,
-                    Some(label) => c["labels"]["nodes"].as_array().is_some_and(|labels| {
-                        labels.iter().any(|l| l["name"].as_str() == Some(label))
-                    }),
-                })
-                .filter_map(|c| issue_item(c, true)),
-        );
-        cursor = next_cursor;
-        if cursor.is_none() || !issues.is_empty() {
-            break;
-        }
+    let mut query = format!("is:issue is:open project:{owner}/{number} sort:created-desc");
+    if let Some(label) = root_label() {
+        query.push_str(&format!(" label:\"{label}\""));
     }
-    Ok(json!({ "issues": issues, "next_cursor": cursor }))
+    let data = graphql(QUERY, json!({ "q": query, "cursor": cursor }))?;
+    let (nodes, next_cursor) = page(&data["search"]);
+    let issues: Vec<Value> = nodes.iter().filter_map(|n| issue_item(n, true)).collect();
+    Ok(json!({ "issues": issues, "next_cursor": next_cursor }))
 }
 
 /// ルート Issue のラベル ([[tracker]] の拡張キー root_label)。
@@ -382,20 +352,30 @@ fn graphql(query: &str, variables: Value) -> Result<Value, String> {
 }
 
 /// 認証は gh から借りる。トークンの保管・更新は gh のログインに委ねる。
+/// 1 回の呼び出しで複数の API リクエストを出すことがあるため、プロセス内で
+/// キャッシュする (gh の起動は 1 リクエストあたり数百 ms かかる)。
 fn token() -> Result<String, String> {
-    let output = Command::new("gh")
-        .args(["auth", "token", "-h", "github.com"])
-        .output()
-        .map_err(|e| format!("failed to run gh: {e}"))?;
-    if !output.status.success() {
-        let stderr = String::from_utf8_lossy(&output.stderr);
-        return Err(format!("gh auth token failed: {} (run: gh auth login)", stderr.trim()));
-    }
-    let token = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-    if token.is_empty() {
-        return Err("gh auth token returned an empty token (run: gh auth login)".to_owned());
-    }
-    Ok(token)
+    static TOKEN: std::sync::OnceLock<Result<String, String>> = std::sync::OnceLock::new();
+    TOKEN
+        .get_or_init(|| {
+            let output = Command::new("gh")
+                .args(["auth", "token", "-h", "github.com"])
+                .output()
+                .map_err(|e| format!("failed to run gh: {e}"))?;
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                return Err(format!(
+                    "gh auth token failed: {} (run: gh auth login)",
+                    stderr.trim()
+                ));
+            }
+            let token = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+            if token.is_empty() {
+                return Err("gh auth token returned an empty token (run: gh auth login)".to_owned());
+            }
+            Ok(token)
+        })
+        .clone()
 }
 
 fn api_url() -> String {

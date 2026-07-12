@@ -217,19 +217,19 @@ fn list_issues_v1_with_parent_lists_open_children_only() {
 }
 
 #[test]
-fn list_group_issues_maps_project_items_across_repos() {
-    // Arrange: Projects V2 の items はリポジトリ横断。closed の項目は落とす
+fn list_group_issues_searches_project_scoped_issues() {
+    // Arrange: グループの Issue は検索 API (project: 修飾子) で取る。
+    // リポジトリ横断で、親を持つ Issue は親の識別を名乗る
     let server = ApiServer::serve(vec![(
         "",
-        json!({ "data": { "repositoryOwner": { "projectV2": { "items": {
+        json!({ "data": { "search": {
             "pageInfo": { "endCursor": "pi==", "hasNextPage": true },
             "nodes": [
-                { "content": { "number": 42, "title": "App task", "state": "OPEN", "parent": null, "repository": { "nameWithOwner": "owner/repo" }, "subIssues": { "nodes": [{ "state": "OPEN" }] } } },
-                { "content": { "number": 9, "title": "Lib task", "state": "OPEN", "parent": { "number": 42, "repository": { "nameWithOwner": "owner/repo" } }, "repository": { "nameWithOwner": "owner/lib" }, "subIssues": { "nodes": [] } } },
-                { "content": { "number": 1, "title": "Done", "state": "CLOSED", "parent": null, "repository": { "nameWithOwner": "owner/repo" }, "subIssues": { "nodes": [] } } },
-                { "content": {} },
+                { "number": 42, "title": "App task", "repository": { "nameWithOwner": "owner/repo" }, "parent": null, "subIssues": { "nodes": [{ "state": "OPEN" }] } },
+                { "number": 9, "title": "Lib task", "repository": { "nameWithOwner": "owner/lib" }, "parent": { "number": 42, "repository": { "nameWithOwner": "owner/repo" } }, "subIssues": { "nodes": [] } },
+                {},
             ],
-        } } } } })
+        } } })
         .to_string(),
     )]);
     let env = TestEnv::new();
@@ -241,8 +241,7 @@ fn list_group_issues_maps_project_items_across_repos() {
         &[("WSM_TRACKER_GITHUB_OWNER", "me")],
     );
 
-    // Assert: draft や PR の項目 (Issue でない content) は落ち、
-    // 親を持つ item は has_parent を名乗る
+    // Assert: Issue でない検索結果 (空ノード) は落ちる
     assert_eq!(out.status, Some(0));
     assert_eq!(
         out.stdout_json(),
@@ -254,6 +253,7 @@ fn list_group_issues_maps_project_items_across_repos() {
             "next_cursor": "pi==",
         })
     );
+    assert!(server.requests()[0].contains("project:me/5"), "must scope by project");
 }
 
 #[test]
@@ -397,82 +397,41 @@ fn groups_key_limits_repo_group_listing() {
 }
 
 #[test]
-fn group_issues_skip_pages_without_matches() {
-    // Arrange: 1 ページ目は closed とラベル外だけ (一致 0)。プラグインが
-    // 内部で次ページへ進み、一致の見つかったページで止まる
-    let page1 = json!({ "data": { "repositoryOwner": { "projectV2": { "items": {
-        "pageInfo": { "endCursor": "p2", "hasNextPage": true },
-        "nodes": [
-            { "content": { "number": 1, "title": "Done", "state": "CLOSED", "parent": null, "repository": { "nameWithOwner": "acme/a" }, "labels": { "nodes": [{ "name": "@me" }] }, "subIssues": { "nodes": [] } } },
-            { "content": { "number": 2, "title": "Other's", "state": "OPEN", "parent": null, "repository": { "nameWithOwner": "acme/a" }, "labels": { "nodes": [] }, "subIssues": { "nodes": [] } } },
-        ],
-    } } } } })
-    .to_string();
-    let page2 = json!({ "data": { "repositoryOwner": { "projectV2": { "items": {
-        "pageInfo": { "endCursor": "p3", "hasNextPage": true },
-        "nodes": [
-            { "content": { "number": 2268, "title": "Mine", "state": "OPEN", "parent": null, "repository": { "nameWithOwner": "acme/a" }, "labels": { "nodes": [{ "name": "@me" }] }, "subIssues": { "nodes": [] } } },
-        ],
-    } } } } })
-    .to_string();
-    let server = ApiServer::serve(vec![("", page1), ("", page2)]);
+fn root_label_goes_into_the_search_query() {
+    // Arrange: ラベルの絞り込みは検索クエリに畳む (items 総なめはしない)
+    let server = ApiServer::serve(vec![(
+        "",
+        json!({ "data": { "search": {
+            "pageInfo": { "endCursor": null, "hasNextPage": false },
+            "nodes": [
+                { "number": 2268, "title": "Mine", "repository": { "nameWithOwner": "acme/a" }, "parent": null, "subIssues": { "nodes": [{ "state": "OPEN" }] } },
+            ],
+        } } })
+        .to_string(),
+    )]);
     let env = TestEnv::new();
 
-    // Act: 1 回の呼び出しで 2 ページ読み進める
+    // Act
     let out = env.run_env(
         &server.url,
         &["list-group-issues-v0", "--group", "12"],
         &[("WSM_TRACKER_GITHUB_OWNER", "acme"), ("WSM_TRACKER_ROOT_LABEL", "@me")],
     );
 
-    // Assert: 一致 (2268) と、続きの cursor が返る
+    // Assert: 1 リクエストで返り、project とラベルの両方がクエリに入る
     assert_eq!(out.status, Some(0));
     assert_eq!(
         out.stdout_json(),
         json!({
-            "issues": [{ "id": "2268", "title": "Mine", "repo": "acme/a", "has_children": false }],
-            "next_cursor": "p3",
+            "issues": [{ "id": "2268", "title": "Mine", "repo": "acme/a", "has_children": true }],
+            "next_cursor": null,
         })
     );
     let requests = server.requests();
-    assert_eq!(requests.len(), 2, "must advance past the empty page");
-    assert!(requests[1].contains(r#""cursor":"p2""#), "second fetch must continue from p2");
-}
-
-#[test]
-fn root_label_narrows_group_issues_to_marked_roots() {
-    // Arrange: エピック #42 だけに wsm-root ラベルが付いている
-    let items = json!({ "data": { "repositoryOwner": { "projectV2": { "items": {
-        "pageInfo": { "endCursor": null, "hasNextPage": false },
-        "nodes": [
-            { "content": { "number": 42, "title": "Team epic", "state": "OPEN", "repository": { "nameWithOwner": "acme/umbrella" }, "labels": { "nodes": [{ "name": "wsm-root" }, { "name": "P1" }] }, "subIssues": { "nodes": [{ "state": "OPEN" }] } } },
-            { "content": { "number": 9, "title": "Someone's task", "state": "OPEN", "repository": { "nameWithOwner": "acme/api" }, "labels": { "nodes": [{ "name": "bug" }] }, "subIssues": { "nodes": [] } } },
-        ],
-    } } } } })
-    .to_string();
-    let server = ApiServer::serve(vec![("", items.clone()), ("", items)]);
-    let env = TestEnv::new();
-
-    // Act: root_label あり / なし
-    let narrowed = env.run_env(
-        &server.url,
-        &["list-group-issues-v0", "--group", "5"],
-        &[("WSM_TRACKER_GITHUB_OWNER", "acme"), ("WSM_TRACKER_ROOT_LABEL", "wsm-root")],
-    );
-    let full = env.run_env(
-        &server.url,
-        &["list-group-issues-v0", "--group", "5"],
-        &[("WSM_TRACKER_GITHUB_OWNER", "acme")],
-    );
-
-    // Assert: ラベル付きのルートだけに絞られ、未設定なら全件
-    assert_eq!(narrowed.status, Some(0));
-    assert_eq!(
-        narrowed.stdout_json()["issues"],
-        json!([{ "id": "42", "title": "Team epic", "repo": "acme/umbrella", "has_children": true }])
-    );
-    assert_eq!(full.status, Some(0));
-    assert_eq!(full.stdout_json()["issues"].as_array().map(Vec::len), Some(2));
+    assert_eq!(requests.len(), 1);
+    assert!(requests[0].contains("project:acme/12"), "must scope by project: {}", requests[0]);
+    assert!(requests[0].contains("@me"), "must filter by label: {}", requests[0]);
+    assert!(requests[0].contains("is:open"), "must ask only open issues: {}", requests[0]);
 }
 
 #[test]
