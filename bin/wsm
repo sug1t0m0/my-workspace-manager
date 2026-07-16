@@ -168,7 +168,9 @@ _dc_indicator() {
 # Step 1: repo-group 選択 (リポジトリのグルーピング。GitHub では Projects)。
 # server が全トラッカーを束ねて返すので、複数トラッカーのときだけ
 # インスタンス名を前置して世界を区別する。返り値は "tracker\tgroup_id"。
+# 第 1 引数が true のとき「◀ 戻る」(マネージャー選択へ) を末尾に出す。
 _pick_repo_group() {
+  local with_back=${1:-}
   local TAB=$'\t'
 
   local json=$(_server list-repo-groups)
@@ -186,6 +188,7 @@ _pick_repo_group() {
   fi
 
   items+=("-${TAB}none${TAB}(グループなし: 全リポジトリ)")
+  [[ "$with_back" == true ]] && items+=("-${TAB}__back__${TAB}◀ 戻る")
 
   local selected=$(printf '%s\n' "${items[@]}" \
     | fzf --with-nth=3.. --delimiter=$'\t' --height=40% --reverse --prompt="Repo group> ")
@@ -215,6 +218,7 @@ _pick_repo() {
     fi
     items+=("${repo}${TAB}${display}")
   done < <(printf '%s\n' "$json" | jq -r '.[] | "\(.ns_repo)\t\(.active_count)"')
+  items+=("__back__${TAB}◀ 戻る")
 
   local selected=$(printf '%s\n' "${items[@]}" \
     | fzf --with-nth=2.. --delimiter=$'\t' --height=40% --reverse --prompt="Repository> ")
@@ -314,6 +318,7 @@ _pick_workspace() {
     fi
     items+=("${acc[@]}")
     [[ -n "$cursor" ]] && items+=("-${TAB}__more__${TAB}  … さらに読み込む")
+    (( ${#parents[@]} == 0 )) && items+=("-${TAB}__back__${TAB}  ◀ 戻る")
 
     local selected=$(printf '%s\n' "${items[@]}" \
       | fzf --with-nth=3 --delimiter=$'\t' --height=40% --reverse --prompt="Issue> " --header="$header")
@@ -323,6 +328,10 @@ _pick_workspace() {
     local sel_id=$(printf '%s\n' "$selected" | cut -f2)
     local sel_children=$(printf '%s\n' "$selected" | cut -f4)
     case "$sel_id" in
+      __back__)
+        echo "__back__"
+        return 0
+        ;;
       __self__)
         local top=${parents[-1]}
         printf '%s\t%s\n' "${top%%|*}" "${top#*|}"
@@ -388,6 +397,7 @@ _pick_work_repo() {
     printf '%s\n' "${items[1]}" | cut -f1
     return 0
   fi
+  items+=("__back__${TAB}◀ 戻る")
   local selected=$(printf '%s\n' "${items[@]}" \
     | fzf --with-nth=2.. --delimiter=$'\t' --height=40% --reverse \
           --prompt="Work repo> " --header="$header")
@@ -628,43 +638,89 @@ case "$cmd" in
 
     ns_repo="" issue_id=""
     if [[ -z "$target" ]]; then
-      if [[ "$WSM_TRANSPORT" == "local" && "$manager_set" == false ]]; then
-        selected_manager=$(_pick_session_manager)
-        [[ -z "$selected_manager" ]] && exit 0
-        export WSM_SESSION_MANAGER=$selected_manager
-      fi
-
-      # 段階選択 (Issue 起点): repo-group → Issue → 作業リポジトリ → DevContainer。
+      # 段階選択 (Issue 起点): [マネージャー →] repo-group → Issue → 作業リポジトリ。
       # 「グループなし」とグループの Issue 一覧が空のときは従来の
-      # リポジトリ起点 (リポジトリ → Issue) に落ちる
-      group_sel=$(_pick_repo_group)
-      [[ -z "$group_sel" ]] && exit 0
-      group_tracker=${group_sel%%$'\t'*}
-      group_id=${group_sel#*$'\t'}
+      # リポジトリ起点 (リポジトリ → Issue) に落ちる。
+      # 各ピッカー末尾の「◀ 戻る」で 1 段戻れる (ESC はフロー全体のキャンセル)
+      pick_manager=false
+      [[ "$WSM_TRANSPORT" == "local" && "$manager_set" == false ]] && pick_manager=true
 
-      selection=""
-      if [[ "$group_id" != "none" ]]; then
-        selection=$(_pick_workspace group "$group_id" "$group_tracker")
-        [[ -z "$selection" ]] && exit 0
-      fi
+      step=group
+      [[ "$pick_manager" == true ]] && step=manager
+      group_tracker="" group_id="" home_repo="" selection=""
+      while true; do
+        case "$step" in
+          manager)
+            selected_manager=$(_pick_session_manager)
+            [[ -z "$selected_manager" ]] && exit 0
+            export WSM_SESSION_MANAGER=$selected_manager
+            step=group
+            ;;
 
-      if [[ -z "$selection" || "$selection" == "__fallback__" ]]; then
-        # リポジトリ起点フロー
-        ns_repo=$(_pick_repo "$group_id")
-        [[ -z "$ns_repo" ]] && exit 0
-        selection=$(_pick_workspace repo "$ns_repo")
-        [[ -z "$selection" || "$selection" == "__fallback__" ]] && exit 0
-        home_repo=${selection%%$'\t'*}
-        issue_id=${selection#*$'\t'}
-        # クロスリポジトリの子 Issue はその所属リポジトリで開く
-        ns_repo=$home_repo
-      else
-        home_repo=${selection%%$'\t'*}
-        issue_id=${selection#*$'\t'}
-        ns_repo=$(_pick_work_repo "$group_id" "$home_repo" "$group_tracker")
-        [[ -z "$ns_repo" ]] && exit 0
-        issue_id=$(_workspace_id_for "$home_repo" "$ns_repo" "$issue_id")
-      fi
+          group)
+            group_sel=$(_pick_repo_group "$pick_manager")
+            [[ -z "$group_sel" ]] && exit 0
+            group_tracker=${group_sel%%$'\t'*}
+            group_id=${group_sel#*$'\t'}
+            case "$group_id" in
+              __back__) step=manager ;;
+              none)     step=repo ;;
+              *)        step=group_issue ;;
+            esac
+            ;;
+
+          group_issue)
+            selection=$(_pick_workspace group "$group_id" "$group_tracker")
+            case "$selection" in
+              "")           exit 0 ;;
+              __back__)     step=group ;;
+              __fallback__) step=repo ;;
+              *)
+                home_repo=${selection%%$'\t'*}
+                issue_id=${selection#*$'\t'}
+                step=work_repo
+                ;;
+            esac
+            ;;
+
+          repo)
+            ns_repo=$(_pick_repo "$group_id")
+            case "$ns_repo" in
+              "")       exit 0 ;;
+              __back__) step=group ;;
+              *)        step=repo_issue ;;
+            esac
+            ;;
+
+          repo_issue)
+            selection=$(_pick_workspace repo "$ns_repo")
+            case "$selection" in
+              ""|__fallback__) exit 0 ;;
+              __back__)        step=repo ;;
+              *)
+                # クロスリポジトリの子 Issue はその所属リポジトリで開く
+                home_repo=${selection%%$'\t'*}
+                issue_id=${selection#*$'\t'}
+                ns_repo=$home_repo
+                break
+                ;;
+            esac
+            ;;
+
+          work_repo)
+            work_repo=$(_pick_work_repo "$group_id" "$home_repo" "$group_tracker")
+            case "$work_repo" in
+              "")       exit 0 ;;
+              __back__) step=group_issue ;;
+              *)
+                ns_repo=$work_repo
+                issue_id=$(_workspace_id_for "$home_repo" "$ns_repo" "$issue_id")
+                break
+                ;;
+            esac
+            ;;
+        esac
+      done
 
       with_devcontainer=true
     else
