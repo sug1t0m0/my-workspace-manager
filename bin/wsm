@@ -138,6 +138,23 @@ _open_terminal_tab() {
 
 # --- UI parts ---
 
+# fzf を ← (1 段戻る) 対応で起動する。stdin をそのまま fzf に流し、
+#   ← ........ "__back__" を返す
+#   ESC/未選択 . 空を返す (フロー全体のキャンセル)
+#   選択 ...... 選択行を返す
+# --expect の出力は「1 行目 = 押されたキー、2 行目 = 選択行」。
+_fzf_with_back() {
+  local out
+  out=$(fzf --expect=left "$@" || true)
+  [[ -z "$out" ]] && return 0
+  local key=${out%%$'\n'*}
+  if [[ "$key" == "left" ]]; then
+    echo "__back__"
+  else
+    printf '%s\n' "${out#*$'\n'}"
+  fi
+}
+
 # サーバーの設定 (tmux_path / herdr_path) に列挙されたものだけを、設定の
 # 並び順で出す。先頭が既定。
 _pick_session_manager() {
@@ -171,7 +188,7 @@ _dc_indicator() {
 # Step 1: repo-group 選択 (リポジトリのグルーピング。GitHub では Projects)。
 # server が全トラッカーを束ねて返すので、複数トラッカーのときだけ
 # インスタンス名を前置して世界を区別する。返り値は "tracker\tgroup_id"。
-# 第 1 引数が true のとき「◀ 戻る」(マネージャー選択へ) を末尾に出す。
+# 第 1 引数が true のとき ← (マネージャー選択へ戻る) のヒントを出す。
 _pick_repo_group() {
   local with_back=${1:-}
   local TAB=$'\t'
@@ -191,10 +208,16 @@ _pick_repo_group() {
   fi
 
   items+=("-${TAB}none${TAB}(グループなし: 全リポジトリ)")
-  [[ "$with_back" == true ]] && items+=("-${TAB}__back__${TAB}◀ 戻る")
 
+  local header=""
+  [[ "$with_back" == true ]] && header="←: 戻る"
   local selected=$(printf '%s\n' "${items[@]}" \
-    | fzf --with-nth=3.. --delimiter=$'\t' --height=40% --reverse --prompt="Repo group> ")
+    | _fzf_with_back --with-nth=3.. --delimiter=$'\t' --height=40% --reverse \
+                     --prompt="Repo group> " ${header:+--header="$header"})
+  if [[ "$selected" == "__back__" ]]; then
+    echo "__back__"
+    return 0
+  fi
   if [[ -n "$selected" ]]; then
     printf '%s\n' "$selected" | cut -f1,2
   fi
@@ -221,10 +244,14 @@ _pick_repo() {
     fi
     items+=("${repo}${TAB}${display}")
   done < <(printf '%s\n' "$json" | jq -r '.[] | "\(.ns_repo)\t\(.active_count)"')
-  items+=("__back__${TAB}◀ 戻る")
 
   local selected=$(printf '%s\n' "${items[@]}" \
-    | fzf --with-nth=2.. --delimiter=$'\t' --height=40% --reverse --prompt="Repository> ")
+    | _fzf_with_back --with-nth=2.. --delimiter=$'\t' --height=40% --reverse \
+                     --prompt="Repository> " --header="←: 戻る")
+  if [[ "$selected" == "__back__" ]]; then
+    echo "__back__"
+    return 0
+  fi
   if [[ -n "$selected" ]]; then
     printf '%s\n' "$selected" | cut -f1
   fi
@@ -321,20 +348,26 @@ _pick_workspace() {
     fi
     items+=("${acc[@]}")
     [[ -n "$cursor" ]] && items+=("-${TAB}__more__${TAB}  … さらに読み込む")
-    (( ${#parents[@]} == 0 )) && items+=("-${TAB}__back__${TAB}  ◀ 戻る")
 
     local selected=$(printf '%s\n' "${items[@]}" \
-      | fzf --with-nth=3 --delimiter=$'\t' --height=40% --reverse --prompt="Issue> " --header="$header")
+      | _fzf_with_back --with-nth=3 --delimiter=$'\t' --height=40% --reverse \
+                       --prompt="Issue> " --header="${header}  (←: 戻る)")
     [[ -z "$selected" ]] && return 0
+    if [[ "$selected" == "__back__" ]]; then
+      # ← はドリル中なら 1 階層上へ (.. と同じ)、トップなら前のピッカーへ
+      if (( ${#parents[@]} > 0 )); then
+        parents=("${parents[@]:0:${#parents[@]}-1}")
+        acc=() cursor="" need_fetch=1
+        continue
+      fi
+      echo "__back__"
+      return 0
+    fi
 
     local sel_repo=$(printf '%s\n' "$selected" | cut -f1)
     local sel_id=$(printf '%s\n' "$selected" | cut -f2)
     local sel_children=$(printf '%s\n' "$selected" | cut -f4)
     case "$sel_id" in
-      __back__)
-        echo "__back__"
-        return 0
-        ;;
       __self__)
         local top=${parents[-1]}
         printf '%s\t%s\n' "${top%%|*}" "${top#*|}"
@@ -666,7 +699,11 @@ case "$cmd" in
             group_tracker=${group_sel%%$'\t'*}
             group_id=${group_sel#*$'\t'}
             case "$group_id" in
-              __back__) step=manager ;;
+              __back__)
+                # 最初の画面 (マネージャー選択なし) では ← = キャンセル
+                [[ "$pick_manager" == true ]] || exit 0
+                step=manager
+                ;;
               none)     step=repo ;;
               *)        step=group_issue ;;
             esac
