@@ -6,6 +6,9 @@
 # だけが実行環境で変わる。
 
 set -euo pipefail
+# zsh は既存ローカル変数の再宣言 (代入なしの local) で `name=''` を stdout に
+# 印字する。ループ内の local が関数の返り値 (コマンド置換) を汚染するため封じる
+setopt typeset_silent
 
 # --- Transport ---
 # local: wsm-server が PATH にある環境 (ホスト) で直接実行する
@@ -243,6 +246,7 @@ _pick_workspace() {
   local -a acc=()      # 現在の階層で読み込み済みの行
   local cursor="" fetch_cursor="" need_fetch=1
   local ctx_repo=""    # 現在の階層の基準リポジトリ (違う repo の行に repo# を付ける)
+  local p=""           # header 組み立てのループ変数 (ループ内で再宣言しない)
 
   while true; do
     if (( need_fetch )); then
@@ -307,7 +311,6 @@ _pick_workspace() {
     else
       header="$arg"
     fi
-    local p
     for p in "${parents[@]}"; do header+="  ${p%%|*}#${p#*|} >"; done
 
     local items=()
