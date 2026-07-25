@@ -19,6 +19,14 @@ fn tmux_exists(bin: &Path, session: &str) -> bool {
     exec::succeeds(bin, &["has-session", "-t", &format!("={session}")])
 }
 
+/// セッションにクライアントが 1 つでもアタッチしているか。空 (未アタッチ) と
+/// 未知のセッション (list-clients が失敗) はどちらも false
+/// (失敗を false に倒す理由は herdr_client_attached のコメント参照)。
+fn tmux_client_attached(bin: &Path, session: &str) -> bool {
+    exec::stdout_if_ok(bin, &["list-clients", "-t", &format!("={session}"), "-F", "#{client_name}"])
+        .is_some_and(|out| !out.trim().is_empty())
+}
+
 // --- herdr ---
 
 fn herdr_sessions(bin: &Path) -> Option<serde_json::Value> {
@@ -85,6 +93,47 @@ fn herdr_ensure_running(bin: &Path, session: &str) -> Result<(), String> {
     Err(format!("failed to start herdr session: {session}"))
 }
 
+/// リポジトリセッションに GUI クライアント (Ghostty タブ) がアタッチして
+/// いるか。herdr の CLI/status/session.json にはアタッチ済みクライアント数が
+/// 出ないため、プロセステーブルで判定する。ヘッドレスサーバは
+/// `herdr --session <name> server` (末尾 server)、GUI クライアントは
+/// `herdr --session <name>` (server サフィックスなし) で、wsm 自身がこの 2 形を
+/// 使い分けて起動しているためコマンド形状に依存してよい。
+///
+/// `ps` の失敗 (未インストール等) は attached=false に倒す: 誤検出で「タブが
+/// 開かずユーザーが詰む」より、取りこぼしで「タブが余分に開く」方が軽微なため
+/// (tmux 側の list-clients 失敗 → false も同じ判断)。
+fn herdr_client_attached(session: &str) -> bool {
+    exec::stdout_if_ok("ps", &["-eo", "command="])
+        .is_some_and(|out| out.lines().any(|line| is_herdr_client_line(line, session)))
+}
+
+/// プロセス行が対象セッションの herdr GUI クライアントか。
+/// 実行ファイル (第 1 トークンの basename) が herdr 本体で、末尾トークンが
+/// `server` (ヘッドレスサーバ) でなく、対象セッションの `--session <name>` を
+/// 持つもの。ラッパー経由の行 (`sh -lc "... herdr ..."` 等) は第 1 トークンで
+/// 除外されるが、ラッパーは必ず実 herdr プロセスを別行に持つため検出は漏れない。
+fn is_herdr_client_line(line: &str, session: &str) -> bool {
+    let tokens: Vec<&str> = line.split_whitespace().collect();
+    if tokens.first().map(|t| exe_basename(t)) != Some("herdr") {
+        return false;
+    }
+    if tokens.last() == Some(&"server") {
+        return false;
+    }
+    tokens.windows(2).any(|pair| pair[0] == "--session" && unquote(pair[1]) == session)
+}
+
+/// 実行ファイルパスの basename (`/a/b/herdr` → `herdr`)。
+fn exe_basename(tok: &str) -> &str {
+    tok.rsplit('/').next().unwrap_or(tok)
+}
+
+/// ps 出力のトークンから前後のクォートを外す (`'name'` / `"name"` → `name`)。
+fn unquote(s: &str) -> &str {
+    s.trim_matches(|c| c == '\'' || c == '"')
+}
+
 fn herdr_stop_and_delete(bin: &Path, session: &str) {
     exec::run_ignoring_failure(bin, &["session", "stop", session, "--json"]);
     exec::run_ignoring_failure(bin, &["session", "delete", session, "--json"]);
@@ -103,6 +152,27 @@ pub fn herdr_blocks_main_removal(repo: &RepoRef, managers: &Managers) -> bool {
         && herdr_socket_path(bin, &session).is_some_and(|sock| {
             herdr_workspaces(bin, &sock).iter().any(|(_, label)| *label != main_label)
         })
+}
+
+/// open で使ったマネージャーのセッションに、すでにクライアント (端末タブ) が
+/// アタッチしているか。UI はこれが true のとき Terminal.open_tab を省き、同一
+/// セッションへの多重アタッチ (タブ増殖) を防ぐ。タブ状態を wsm が保持する
+/// わけではなく、その都度 live に問い合わせる (workspace_session_exists と同じ
+/// 系統の観測)。判定の粒度はマネージャーのセッション粒度に従う:
+/// - tmux: Workspace 単位 (`list-clients` が非空)
+/// - herdr: リポジトリ単位 (プロセステーブルに GUI クライアントがある)
+pub fn has_attached_client(
+    manager: SessionManager,
+    repo: &RepoRef,
+    id: &WorkspaceId,
+    managers: &Managers,
+) -> bool {
+    match manager {
+        SessionManager::Tmux => managers
+            .path(SessionManager::Tmux)
+            .is_some_and(|bin| tmux_client_attached(bin, &domain::tmux_session_name(repo, id))),
+        SessionManager::Herdr => herdr_client_attached(&domain::herdr_session_name(repo)),
+    }
 }
 
 // --- Workspace とセッションの対応 (設定されたマネージャーを横断) ---

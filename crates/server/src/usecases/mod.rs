@@ -376,6 +376,8 @@ pub fn open(home: &Path, repo: &RepoRef, id: &WorkspaceId, configs: &[String]) -
         "session": session,
         "path": workspace.to_string_lossy(),
         "attach_command": session::attach_command(manager, &session, &workspace, &managers),
+        // すでにタブがアタッチしていれば UI は open_tab を省く (タブ増殖の防止)
+        "attached": session::has_attached_client(manager, repo, id, &managers),
     }))
 }
 

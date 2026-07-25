@@ -404,6 +404,13 @@ macOS のみ)。
 attach_command は server の open 応答が返し、UI はそれをそのまま渡す
 (決定事項を参照)。
 
+タブを追跡しない代わりに、多重アタッチ(同一セッションへのタブ増殖)は
+server が open 応答の `attached` で防ぐ。server はセッションマネージャーの
+生きたクライアントの有無を検出し(tmux は `list-clients`、herdr は
+プロセステーブルの `server` サフィックス無し `herdr --session` プロセス)、
+`attached: true` なら UI は open_tab を呼ばずメッセージ表示に留める。
+UI はマネージャー非依存のまま。
+
 ホスト以外(Transport が SSH のとき)ではアタッチできないため、Terminal は
 何もしない。DevContainer からの open は「ホスト側にセッションを用意する」
 ところまでが責務。
@@ -572,11 +579,13 @@ UI のマネージャー選択はこれを使う (選択肢のハードコード
 → Workspace を開く。worktree・セッションを必要に応じて作成し、
 `--config` があれば DevContainer も起動する。
 ```json
-{"status": "ok", "message": "...", "session": "owner_repo_123", "path": "/Users/me/worktrees/github.com/owner/repo/123", "attach_command": "/opt/homebrew/bin/tmux attach-session -t 'owner_repo_123'"}
+{"status": "ok", "message": "...", "session": "owner_repo_123", "path": "/Users/me/worktrees/github.com/owner/repo/123", "attach_command": "/opt/homebrew/bin/tmux attach-session -t 'owner_repo_123'", "attached": false}
 ```
 
 - `attach_command`: UI がそのまま Terminal に渡すアタッチ用コマンド。
   server (ホスト側) が SessionManager 実装に応じて組み立てる
+- `attached`: セッションに生きたクライアント (タブ) が既にあるか。
+  true なら UI は Terminal.open_tab を呼ばない (Terminal 節)
 - `session` / `path`: 参考情報。UI のアタッチには使わない
 
 `remove --repo <ns_repo> --issue <id>`

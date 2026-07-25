@@ -783,9 +783,17 @@ case "$cmd" in
     printf '%s\n' "$result" | jq -r '.message // .error'
     [[ $(printf '%s\n' "$result" | jq -r '.status // empty') == "ok" ]] || exit 1
 
+    # すでにセッションにアタッチ済みのタブがあれば新規タブは開かない
+    # (同一セッションへの多重アタッチ = タブ増殖を防ぐ)。判定は server が
+    # マネージャーごとに行い、UI はその結果に従うだけ (マネージャー非依存)。
     if _terminal_available; then
-      attach_command=$(printf '%s\n' "$result" | jq -r '.attach_command // empty')
-      [[ -n "$attach_command" ]] && _open_terminal_tab "$attach_command"
+      attached=$(printf '%s\n' "$result" | jq -r '.attached // false')
+      if [[ "$attached" == true ]]; then
+        echo "(既存のタブにアタッチ済み — 新規タブは開きません)"
+      else
+        attach_command=$(printf '%s\n' "$result" | jq -r '.attach_command // empty')
+        [[ -n "$attach_command" ]] && _open_terminal_tab "$attach_command"
+      fi
     fi
     ;;
 

@@ -18,7 +18,7 @@ use std::process::Command;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 const FAKE_COMMANDS: &[&str] =
-    &["ghq", "git", "tmux", "herdr", "docker", "devcontainer", "tracker", "tracker2"];
+    &["ghq", "git", "tmux", "herdr", "docker", "devcontainer", "tracker", "tracker2", "ps"];
 
 const FAKE_SCRIPT: &str = r#"#!/bin/sh
 # 汎用フェイク: 呼び出しを 1 行でログに記録し、パターン表の最初の一致で応答する。
