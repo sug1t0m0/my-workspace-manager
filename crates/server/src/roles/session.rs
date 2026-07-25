@@ -161,6 +161,9 @@ pub fn herdr_blocks_main_removal(repo: &RepoRef, managers: &Managers) -> bool {
 /// 系統の観測)。判定の粒度はマネージャーのセッション粒度に従う:
 /// - tmux: Workspace 単位 (`list-clients` が非空)
 /// - herdr: リポジトリ単位 (プロセステーブルに GUI クライアントがある)
+///
+/// 既知の制約: check-then-act のため同時 open は競合し得る (両方が false を
+/// 観測して二重にタブが開く)。排他は取らない (docs/wsm.md Terminal 節)。
 pub fn has_attached_client(
     manager: SessionManager,
     repo: &RepoRef,
