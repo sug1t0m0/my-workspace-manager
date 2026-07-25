@@ -411,6 +411,10 @@ server が open 応答の `attached` で防ぐ。server はセッションマネ
 `attached: true` なら UI は open_tab を呼ばずメッセージ表示に留める。
 UI はマネージャー非依存のまま。
 
+既知の制約: この判定は check-then-act のため、同一セッションへの `wsm op`
+が同時に走ると両方が `attached: false` を観測して二重にタブが開き得る
+(排他は取らない。手動操作の重複で稀に余分なタブが開くだけの軽微な競合)。
+
 ホスト以外(Transport が SSH のとき)ではアタッチできないため、Terminal は
 何もしない。DevContainer からの open は「ホスト側にセッションを用意する」
 ところまでが責務。
