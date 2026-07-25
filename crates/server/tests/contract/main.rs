@@ -1596,6 +1596,139 @@ fn open_main_with_herdr_focuses_existing_main_workspace() {
 }
 
 #[test]
+fn open_reports_attached_when_a_tmux_client_is_present() {
+    // Arrange: セッションは既存で、クライアント (タブ) がアタッチ済み
+    let env = TestEnv::new();
+    env.stub("^tmux has-session -t =owner_repo$", "")
+        .stub("^tmux list-clients -t =owner_repo ", "/dev/ttys003\n");
+
+    // Act
+    let out = env.run(&["open", "--repo", "owner/repo", "--issue", "main"]);
+
+    // Assert: attached=true → UI は新規タブを開かない
+    assert_eq!(out.status, Some(0));
+    let v = out.stdout_json();
+    assert_eq!(v["attached"], true, "a live tmux client means a tab is already attached");
+}
+
+#[test]
+fn open_reports_not_attached_when_tmux_session_has_no_clients() {
+    // Arrange: セッションは存在するがクライアントは 0 (list-clients は空)
+    let env = TestEnv::new();
+    env.stub("^tmux has-session -t =owner_repo$", "")
+        .stub("^tmux list-clients -t =owner_repo ", "");
+
+    // Act
+    let out = env.run(&["open", "--repo", "owner/repo", "--issue", "main"]);
+
+    // Assert: attached=false → UI は新規タブを開く
+    assert_eq!(out.status, Some(0));
+    let v = out.stdout_json();
+    assert_eq!(v["attached"], false, "no tmux clients means no tab is attached yet");
+}
+
+#[test]
+fn open_issue_with_herdr_reports_attached_when_a_client_process_is_present() {
+    // Arrange: リポジトリセッションに GUI クライアント (server サフィックス無し)
+    // がプロセステーブルに存在する
+    let env = TestEnv::new();
+    let home = env.home_str();
+    let sock = herdr_sock(&home);
+    env.write_home(".config/wsm/config.toml", &herdr_first_config(&env))
+        .write_home("worktrees/github.com/owner/repo/42/.gitkeep", "")
+        .stub("^herdr session list --json$", &herdr_sessions_json(&home, true))
+        .stub(
+            &format!("^HERDR_SOCKET_PATH={sock} herdr workspace list$"),
+            &herdr_workspaces_json(&[("w1", "repo"), ("w7", "42")]),
+        )
+        .stub(&format!("^HERDR_SOCKET_PATH={sock} herdr workspace focus "), "")
+        .stub("^ps -eo command=$", "herdr --session owner.repo server\nherdr --session owner.repo\n");
+
+    // Act
+    let out = env.run(&["open", "--repo", "owner/repo", "--issue", "42"]);
+
+    // Assert: ヘッドレスサーバに加えて GUI クライアントがいる → attached=true
+    assert_eq!(out.status, Some(0));
+    let v = out.stdout_json();
+    assert_eq!(v["attached"], true, "a non-server herdr --session process is an attached tab");
+}
+
+#[test]
+fn open_issue_with_herdr_reports_not_attached_when_only_headless_server_runs() {
+    // Arrange: セッションはヘッドレスサーバのみ (GUI クライアント無し)
+    let env = TestEnv::new();
+    let home = env.home_str();
+    let sock = herdr_sock(&home);
+    env.write_home(".config/wsm/config.toml", &herdr_first_config(&env))
+        .write_home("worktrees/github.com/owner/repo/42/.gitkeep", "")
+        .stub("^herdr session list --json$", &herdr_sessions_json(&home, true))
+        .stub(
+            &format!("^HERDR_SOCKET_PATH={sock} herdr workspace list$"),
+            &herdr_workspaces_json(&[("w1", "repo"), ("w7", "42")]),
+        )
+        .stub(&format!("^HERDR_SOCKET_PATH={sock} herdr workspace focus "), "")
+        .stub("^ps -eo command=$", "herdr --session owner.repo server\n");
+
+    // Act
+    let out = env.run(&["open", "--repo", "owner/repo", "--issue", "42"]);
+
+    // Assert: `server` サフィックスのみ → タブは無い → attached=false
+    assert_eq!(out.status, Some(0));
+    let v = out.stdout_json();
+    assert_eq!(v["attached"], false, "a headless server alone is not an attached tab");
+}
+
+#[test]
+fn open_issue_with_herdr_ignores_non_herdr_process_mentioning_the_session() {
+    // Arrange: herdr 本体でないプロセスが引数に `--session owner.repo` を持つ
+    let env = TestEnv::new();
+    let home = env.home_str();
+    let sock = herdr_sock(&home);
+    env.write_home(".config/wsm/config.toml", &herdr_first_config(&env))
+        .write_home("worktrees/github.com/owner/repo/42/.gitkeep", "")
+        .stub("^herdr session list --json$", &herdr_sessions_json(&home, true))
+        .stub(
+            &format!("^HERDR_SOCKET_PATH={sock} herdr workspace list$"),
+            &herdr_workspaces_json(&[("w1", "repo"), ("w7", "42")]),
+        )
+        .stub(&format!("^HERDR_SOCKET_PATH={sock} herdr workspace focus "), "")
+        .stub("^ps -eo command=$", "some-tool --label herdr --session owner.repo\n");
+
+    // Act
+    let out = env.run(&["open", "--repo", "owner/repo", "--issue", "42"]);
+
+    // Assert: 実行ファイルが herdr でない行はクライアントとみなさない
+    assert_eq!(out.status, Some(0));
+    let v = out.stdout_json();
+    assert_eq!(v["attached"], false, "only processes whose executable is herdr may count");
+}
+
+#[test]
+fn open_issue_with_herdr_treats_trailing_server_token_as_headless() {
+    // Arrange: `--session` の直後は server でないが、末尾トークンが server
+    let env = TestEnv::new();
+    let home = env.home_str();
+    let sock = herdr_sock(&home);
+    env.write_home(".config/wsm/config.toml", &herdr_first_config(&env))
+        .write_home("worktrees/github.com/owner/repo/42/.gitkeep", "")
+        .stub("^herdr session list --json$", &herdr_sessions_json(&home, true))
+        .stub(
+            &format!("^HERDR_SOCKET_PATH={sock} herdr workspace list$"),
+            &herdr_workspaces_json(&[("w1", "repo"), ("w7", "42")]),
+        )
+        .stub(&format!("^HERDR_SOCKET_PATH={sock} herdr workspace focus "), "")
+        .stub("^ps -eo command=$", "herdr --session owner.repo --json server\n");
+
+    // Act
+    let out = env.run(&["open", "--repo", "owner/repo", "--issue", "42"]);
+
+    // Assert: 末尾 server はヘッドレスサーバ → attached=false
+    assert_eq!(out.status, Some(0));
+    let v = out.stdout_json();
+    assert_eq!(v["attached"], false, "a trailing server token marks a headless server");
+}
+
+#[test]
 fn remove_issue_with_herdr_closes_workspace_only() {
     // Arrange: Issue 42 の workspace の他にも workspace が残っている
     let env = TestEnv::new();
