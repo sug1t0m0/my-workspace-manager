@@ -1729,6 +1729,31 @@ fn open_issue_with_herdr_treats_trailing_server_token_as_headless() {
 }
 
 #[test]
+fn open_issue_with_herdr_detects_client_with_quoted_executable_path() {
+    // Arrange: ps 出力の実行ファイルパスがクォート付き ('/opt/tools/herdr')
+    let env = TestEnv::new();
+    let home = env.home_str();
+    let sock = herdr_sock(&home);
+    env.write_home(".config/wsm/config.toml", &herdr_first_config(&env))
+        .write_home("worktrees/github.com/owner/repo/42/.gitkeep", "")
+        .stub("^herdr session list --json$", &herdr_sessions_json(&home, true))
+        .stub(
+            &format!("^HERDR_SOCKET_PATH={sock} herdr workspace list$"),
+            &herdr_workspaces_json(&[("w1", "repo"), ("w7", "42")]),
+        )
+        .stub(&format!("^HERDR_SOCKET_PATH={sock} herdr workspace focus "), "")
+        .stub("^ps -eo command=$", "'/opt/tools/herdr' --session owner.repo\n");
+
+    // Act
+    let out = env.run(&["open", "--repo", "owner/repo", "--issue", "42"]);
+
+    // Assert: クォートを外した basename が herdr ならクライアント → attached=true
+    assert_eq!(out.status, Some(0));
+    let v = out.stdout_json();
+    assert_eq!(v["attached"], true, "a quoted executable path must still count as herdr");
+}
+
+#[test]
 fn remove_issue_with_herdr_closes_workspace_only() {
     // Arrange: Issue 42 の workspace の他にも workspace が残っている
     let env = TestEnv::new();
