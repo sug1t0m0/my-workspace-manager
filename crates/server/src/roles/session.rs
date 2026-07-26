@@ -115,7 +115,8 @@ fn herdr_client_attached(session: &str) -> bool {
 /// 除外されるが、ラッパーは必ず実 herdr プロセスを別行に持つため検出は漏れない。
 fn is_herdr_client_line(line: &str, session: &str) -> bool {
     let tokens: Vec<&str> = line.split_whitespace().collect();
-    if tokens.first().map(|t| exe_basename(t)) != Some("herdr") {
+    // 実行ファイルパスもセッション名と同様にクォート付きで出得るため unquote する
+    if tokens.first().map(|t| exe_basename(unquote(t))) != Some("herdr") {
         return false;
     }
     if tokens.last() == Some(&"server") {
