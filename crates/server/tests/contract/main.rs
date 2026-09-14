@@ -284,8 +284,7 @@ fn list_repos_counts_active_workspaces() {
                 "worktree {home}/ghq/github.com/owner/repo\nHEAD aaa\nbranch refs/heads/main\n\nworktree {home}/worktrees/github.com/owner/repo/42\nHEAD bbb\nbranch refs/heads/feature/42\n\n"
             ),
         )
-        .stub("^tmux has-session -t =owner_repo$", "")
-        .stub("^tmux has-session -t =owner_repo_42$", "");
+        .stub(TMUX_LIST_SESSIONS, "owner_repo\nowner_repo_42\n");
 
     // Act
     let out = env.run(&["list-repos", "--group", "none"]);
@@ -754,6 +753,84 @@ fn invalid_issue_ids_from_plugin_are_dropped() {
     );
 }
 
+// --- セッション状態のスナップショット (一覧系は Issue 数に依らず固定回数の照会) ---
+
+/// 一覧系が tmux のセッション名を一括で取るコマンド (フェイクのログ行の形)。
+const TMUX_LIST_SESSIONS: &str = "^tmux list-sessions -F #\\{session_name\\}$";
+
+#[test]
+fn list_issues_probes_session_managers_once_regardless_of_issue_count() {
+    // Arrange: open な Issue が 3 件、うち 42 は tmux セッション、43 は herdr の
+    // workspace が生きている (どちらも worktree あり)。tmux / herdr ともに設定済み
+    let env = TestEnv::new();
+    let home = env.home_str();
+    let sock = herdr_sock(&home);
+    env.write_home("ghq/github.com/owner/repo/.gitkeep", "")
+        .write_home("worktrees/github.com/owner/repo/42/.gitkeep", "")
+        .write_home("worktrees/github.com/owner/repo/43/.gitkeep", "")
+        .stub(
+            "worktree list --porcelain",
+            &format!(
+                "worktree {home}/worktrees/github.com/owner/repo/42\nHEAD aaa\nbranch refs/heads/feature/42\n\nworktree {home}/worktrees/github.com/owner/repo/43\nHEAD bbb\nbranch refs/heads/feature/43\n\n"
+            ),
+        )
+        .stub(TMUX_LIST_SESSIONS, "owner_repo_42\n")
+        .stub("^herdr session list --json$", &herdr_sessions_json(&home, true))
+        .stub(
+            &format!("^HERDR_SOCKET_PATH={sock} herdr workspace list$"),
+            &herdr_workspaces_json(&[("w7", "43")]),
+        )
+        .stub("^docker ps -a", "")
+        .stub(
+            "^tracker list-issues-v1 --repo owner/repo$",
+            r#"[{"id":"42","title":"A"},{"id":"43","title":"B"},{"id":"44","title":"C"}]"#,
+        );
+
+    // Act
+    let out = env.run(&["list-issues", "--repo", "owner/repo"]);
+
+    // Assert: active は行ごとに正しく、セッション一覧の照会は各 1 回だけ
+    // (has-session による行ごとの問い合わせはしない)
+    assert_eq!(out.status, Some(0));
+    let actives: Vec<(String, bool)> = out.stdout_json()["issues"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| (row["id"].as_str().unwrap().to_owned(), row["active"].as_bool().unwrap()))
+        .collect();
+    assert_eq!(
+        actives,
+        vec![
+            ("main".to_owned(), true),
+            ("42".to_owned(), true),
+            ("43".to_owned(), true),
+            ("44".to_owned(), false),
+        ]
+    );
+    let invocations = env.invocations();
+    let count = |prefix: &str| invocations.iter().filter(|l| l.starts_with(prefix)).count();
+    assert_eq!(count("tmux list-sessions"), 1, "{invocations:?}");
+    assert_eq!(count("herdr session list"), 1, "{invocations:?}");
+    assert_eq!(count("tmux has-session"), 0, "{invocations:?}");
+}
+
+#[test]
+fn list_issues_treats_stopped_tmux_server_as_no_sessions() {
+    // Arrange: tmux サーバーが起動していない (list-sessions は失敗 = 未スタブ)
+    let env = TestEnv::new();
+    env.stub("^docker ps -a", "")
+        .stub("^tracker list-issues-v0 --repo owner/repo$", r#"[{"id":"42","title":"A"}]"#);
+
+    // Act
+    let out = env.run(&["list-issues", "--repo", "owner/repo"]);
+
+    // Assert: 失敗は「セッションなし」に倒れ、一覧自体は成立する
+    assert_eq!(out.status, Some(0));
+    let rows = out.stdout_json()["issues"].clone();
+    assert_eq!(rows[0]["active"], false);
+    assert_eq!(rows[1]["active"], false);
+}
+
 // --- list-workspaces ---
 
 #[test]
@@ -784,8 +861,7 @@ fn list_workspaces_lists_main_and_worktree_entries() {
                 "worktree {home}/worktrees/github.com/owner/repo/42\nHEAD bbb\nbranch refs/heads/feature/42\n\n"
             ),
         )
-        .stub("^tmux has-session -t =owner_repo$", "")
-        .stub("^tmux has-session -t =owner_repo_42$", "")
+        .stub(TMUX_LIST_SESSIONS, "owner_repo\nowner_repo_42\n")
         .stub("^docker ps -a", "")
         .stub(
             "^tracker issue-v0 --repo owner/repo --id 42$",
@@ -868,7 +944,7 @@ fn cross_repo_children_carry_their_home_repo() {
     let env = TestEnv::new();
     env.stub("^docker ps -a --filter label=wsm.ns-repo=owner/repo ", "")
         .stub("^docker ps -a --filter label=wsm.ns-repo=owner/lib ", "running\n")
-        .stub("^tmux has-session -t =owner_lib_9$", "")
+        .stub(TMUX_LIST_SESSIONS, "owner_lib_9\n")
         .stub(
             "^tracker list-issues-v2 --repo owner/repo --parent 42$",
             r#"{"issues":[{"id":"421","title":"Same repo"},{"id":"9","title":"In lib","repo":"owner/lib"},{"id":"7","title":"Bad repo","repo":"owner//"}],"next_cursor":null}"#,
@@ -930,7 +1006,7 @@ fn list_group_issues_spans_repositories() {
     // 親が一覧に居ない 88 はサブツリーの入り口として残る
     let env = TestEnv::new();
     env.stub("^docker ps -a", "")
-        .stub("^tmux has-session -t =owner_lib_9$", "")
+        .stub(TMUX_LIST_SESSIONS, "owner_lib_9\n")
         .stub(
             "^tracker list-group-issues-v0 --group 5$",
             r#"{"issues":[{"id":"42","title":"App task","repo":"owner/repo","has_children":true},{"id":"9","title":"Lib task","repo":"owner/lib","parent":{"repo":"owner/repo","id":"42"}},{"id":"77","title":"Someone's child","repo":"owner/repo","parent":{"repo":"owner/repo","id":"42"}},{"id":"88","title":"Subtree entry","repo":"owner/repo","parent":{"repo":"owner/umbrella","id":"999"}},{"id":"1","title":"No repo"}],"next_cursor":"page2=="}"#,
@@ -1058,8 +1134,7 @@ fn list_issues_shows_orphaned_worktrees_with_real_state_in_worktree_order() {
                 "worktree {home}/worktrees/github.com/owner/repo/41\nHEAD aaa\nbranch refs/heads/feature/41\n\nworktree {home}/worktrees/github.com/owner/repo/42\nHEAD bbb\nbranch refs/heads/feature/42\n\n"
             ),
         )
-        .stub("^tmux has-session -t =owner_repo_41$", "")
-        .stub("^tmux has-session -t =owner_repo_42$", "")
+        .stub(TMUX_LIST_SESSIONS, "owner_repo_41\nowner_repo_42\n")
         .stub("^docker ps -a", "")
         .stub("^tracker list-issues-v1 --repo owner/repo$", r#"[{"id":"43","title":"Other work"}]"#)
         .stub("^tracker issue-v0 --repo owner/repo --id 41$", r#"{"title":"Old bug","state":"closed"}"#)

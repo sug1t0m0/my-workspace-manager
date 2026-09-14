@@ -61,7 +61,7 @@ pub fn list_group_issues(
 ) -> CmdResult {
     let trackers = settings::trackers(home)?;
     let plugin = trackers.named_or_default(tracker_name.as_deref())?;
-    let managers = settings::session_managers(home);
+    let sessions = session::Snapshot::take(&settings::session_managers(home));
     let (issues, next_cursor) = tracker::group_issues(plugin, group, cursor.as_deref());
 
     // 同じ応答に親が居る item は、ドリルで親の下にも出るためトップから隠す
@@ -77,11 +77,7 @@ pub fn list_group_issues(
         .filter_map(|item| {
             let ns_repo = item.repo.as_deref()?;
             let repo = RepoRef::parse(ns_repo)?;
-            let active = session::workspace_session_exists(
-                &repo,
-                &WorkspaceId::Issue(item.id.clone()),
-                &managers,
-            );
+            let active = sessions.workspace_exists(&repo, &WorkspaceId::Issue(item.id.clone()));
             let parent_fetched = item
                 .parent
                 .as_ref()
@@ -170,12 +166,12 @@ pub fn list_repos(home: &Path, group: Option<String>, tracker_name: Option<Strin
     };
 
     let paths = paths(home);
-    let managers = settings::session_managers(home);
+    let sessions = session::Snapshot::take(&settings::session_managers(home));
     Ok(Value::Array(
         repos
             .iter()
             .map(|entry| {
-                json!({ "ns_repo": entry.repo.ns_repo(), "active_count": active_count(&paths, entry, &managers) })
+                json!({ "ns_repo": entry.repo.ns_repo(), "active_count": active_count(&paths, entry, &sessions) })
             })
             .collect(),
     ))
@@ -183,13 +179,14 @@ pub fn list_repos(home: &Path, group: Option<String>, tracker_name: Option<Strin
 
 pub fn list_workspaces(home: &Path) -> CmdResult {
     let paths = paths(home);
-    let managers = settings::session_managers(home);
+    let sessions = session::Snapshot::take(&settings::session_managers(home));
     let trackers = settings::trackers(home)?;
     let mut rows = Vec::new();
     for entry in repostore::entries(home)? {
         let repo = &entry.repo;
         let plugin = trackers.for_repo(repo, entry.tracker.as_deref())?;
-        let main_entry = session::workspace_session_exists(repo, &WorkspaceId::Main, &managers)
+        let main_entry = sessions
+            .workspace_exists(repo, &WorkspaceId::Main)
             .then(|| {
                 json!({
                     "ns_repo": repo.ns_repo(), "id": "main", "title": "main",
@@ -198,14 +195,10 @@ pub fn list_workspaces(home: &Path) -> CmdResult {
                 })
             });
 
-        let worktree_entries: Vec<Value> = active_issue_ids(&paths, &entry, &managers)
+        let worktree_entries: Vec<Value> = active_issue_ids(&paths, &entry, &sessions)
             .into_iter()
             .map(|id| {
-                let active = session::workspace_session_exists(
-                    repo,
-                    &WorkspaceId::Issue(id.clone()),
-                    &managers,
-                );
+                let active = sessions.workspace_exists(repo, &WorkspaceId::Issue(id.clone()));
                 let (title, closed) = plugin
                     .and_then(|t| tracker::issue(t, repo, &id))
                     .unwrap_or_else(|| ("unknown".to_owned(), false));
@@ -233,14 +226,14 @@ pub fn list_issues(
     // 出ないだけで、open は従来どおり lookup がエラーにする
     let entry = repostore::find(home, repo)?;
     let paths = paths(home);
-    let managers = settings::session_managers(home);
+    let sessions = session::Snapshot::take(&settings::session_managers(home));
     let trackers = settings::trackers(home)?;
     let plugin =
         trackers.for_repo(repo, entry.as_ref().and_then(|e| e.tracker.as_deref()))?;
 
     let active_ids = entry
         .as_ref()
-        .map(|entry| active_issue_ids(&paths, entry, &managers))
+        .map(|entry| active_issue_ids(&paths, entry, &sessions))
         .unwrap_or_default();
     let (open_issues, next_cursor) = plugin
         .map(|t| tracker::open_issues(t, repo, parent.as_deref(), cursor.as_deref()))
@@ -253,11 +246,7 @@ pub fn list_issues(
         let item_repo = item.repo.as_deref().unwrap_or(&ns_repo);
         let (active, dc) = match item.repo.as_deref().and_then(|r| RepoRef::parse(r)) {
             Some(foreign) if item_repo != ns_repo => (
-                session::workspace_session_exists(
-                    &foreign,
-                    &WorkspaceId::Issue(item.id.clone()),
-                    &managers,
-                ),
+                sessions.workspace_exists(&foreign, &WorkspaceId::Issue(item.id.clone())),
                 devcontainer::state(&foreign, &item.id).to_owned(),
             ),
             _ => (
@@ -281,7 +270,7 @@ pub fn list_issues(
         "main",
         "main",
         &ns_repo,
-        session::workspace_session_exists(repo, &WorkspaceId::Main, &managers),
+        sessions.workspace_exists(repo, &WorkspaceId::Main),
         false,
         devcontainer::state(repo, "main"),
         false,
@@ -419,10 +408,11 @@ pub fn remove(home: &Path, repo: &RepoRef, id: &WorkspaceId) -> CmdResult {
 
 /// 合成ビュー: アクティブな (= 規約パスにあり、セッションが生きている)
 /// worktree の Issue id。Worktree ロールと SessionManager ロールの合成。
+/// セッションの有無はコマンド開始時のスナップショットで判定する。
 fn active_issue_ids(
     paths: &domain::Paths,
     entry: &RepoEntry,
-    managers: &settings::Managers,
+    sessions: &session::Snapshot,
 ) -> Vec<String> {
     if !entry.clone_path.is_dir() {
         return Vec::new();
@@ -437,7 +427,7 @@ fn active_issue_ids(
             let expected = domain::workspace_path(paths, entry, &id);
             Path::new(path) == expected
                 && expected.is_dir()
-                && session::workspace_session_exists(&entry.repo, &id, managers)
+                && sessions.workspace_exists(&entry.repo, &id)
         })
         .map(|(_, issue)| issue)
         .collect()
@@ -445,9 +435,9 @@ fn active_issue_ids(
 
 /// 合成ビュー: リポジトリ内のアクティブ Workspace 数
 /// (アクティブな worktree + main セッションの有無)。
-fn active_count(paths: &domain::Paths, entry: &RepoEntry, managers: &settings::Managers) -> usize {
-    active_issue_ids(paths, entry, managers).len()
-        + usize::from(session::workspace_session_exists(&entry.repo, &WorkspaceId::Main, managers))
+fn active_count(paths: &domain::Paths, entry: &RepoEntry, sessions: &session::Snapshot) -> usize {
+    active_issue_ids(paths, entry, sessions).len()
+        + usize::from(sessions.workspace_exists(&entry.repo, &WorkspaceId::Main))
 }
 
 fn issue_entry(
