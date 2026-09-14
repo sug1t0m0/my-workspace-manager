@@ -13,7 +13,7 @@
 use crate::infra::exec;
 use crate::infra::settings::{Managers, SessionManager};
 use std::collections::{HashMap, HashSet};
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use wsm_shared::domains::{self as domain, RepoRef, WorkspaceId};
 
 fn tmux_exists(bin: &Path, session: &str) -> bool {
@@ -182,48 +182,42 @@ pub fn has_attached_client(
 
 // --- Workspace とセッションの対応 (設定されたマネージャーを横断) ---
 
-/// 設定されたマネージャーの状態を、コマンド開始時に 1 回の照会で取り込んだ
-/// スナップショット。一覧系ユースケースは Issue ごとに外部コマンドを起動する
-/// 代わりにこれと照合するため、起動回数が Issue 数に依らず固定になり、全行が
-/// 同じ時点の状態で判定される。状態を変える経路 (ensure / remove /
-/// has_attached_client) は変更直後の再確認が要るため live に照会する。
+/// 設定されたマネージャーの状態を、コマンド開始時に取り込んだスナップショット。
+/// 一覧系ユースケースは Issue ごとに外部コマンドを起動する代わりにこれと
+/// 照合するため、起動回数が Issue 数に依らず固定 (tmux 1 回 + herdr 1 回 +
+/// running な herdr セッション数) になり、全行が同じ時点の状態で判定される。
+/// 取り込みは take() で完結し、以後は不変 (遅延取得や再取得はしない)。
+/// 状態を変える経路 (ensure / remove / has_attached_client) は変更直後の
+/// 再確認が要るため live に照会する。
 pub struct Snapshot {
     /// tmux の全セッション名 (サーバー未起動は空)
     tmux_sessions: HashSet<String>,
-    /// herdr が設定されていればその running セッション表
-    herdr: Option<HerdrSnapshot>,
-}
-
-struct HerdrSnapshot {
-    bin: PathBuf,
-    /// running なセッションの name → socket_path
-    sockets: HashMap<String, String>,
+    /// herdr の running セッション name → その workspace ラベル集合。
+    /// herdr 未設定なら空 (running セッションが無い場合と区別しない)
+    herdr_workspaces: HashMap<String, HashSet<String>>,
 }
 
 impl Snapshot {
     pub fn take(managers: &Managers) -> Self {
         let tmux_sessions =
             managers.path(SessionManager::Tmux).map(tmux_session_names).unwrap_or_default();
-        let herdr = managers.path(SessionManager::Herdr).map(|bin| HerdrSnapshot {
-            bin: bin.to_owned(),
-            sockets: herdr_running_sockets(bin),
-        });
-        Self { tmux_sessions, herdr }
+        let herdr_workspaces =
+            managers.path(SessionManager::Herdr).map(herdr_running_workspaces).unwrap_or_default();
+        Self { tmux_sessions, herdr_workspaces }
     }
 
     /// Workspace のセッションが存在するか。tmux はセッション名で、herdr は
-    /// リポジトリセッション (+ Issue なら workspace ラベル) で判定する。
+    /// リポジトリセッションが running (+ Issue なら workspace ラベルあり) で判定する。
     pub fn workspace_exists(&self, repo: &RepoRef, id: &WorkspaceId) -> bool {
         if self.tmux_sessions.contains(&domain::tmux_session_name(repo, id)) {
             return true;
         }
-        let Some(herdr) = &self.herdr else { return false };
-        let Some(sock) = herdr.sockets.get(&domain::herdr_session_name(repo)) else {
+        let Some(labels) = self.herdr_workspaces.get(&domain::herdr_session_name(repo)) else {
             return false;
         };
         match id {
             WorkspaceId::Main => true,
-            WorkspaceId::Issue(issue) => herdr_workspace_id(&herdr.bin, sock, issue).is_some(),
+            WorkspaceId::Issue(issue) => labels.contains(issue),
         }
     }
 }
@@ -235,8 +229,11 @@ fn tmux_session_names(bin: &Path) -> HashSet<String> {
         .unwrap_or_default()
 }
 
-/// herdr の running セッションの name → socket_path (1 回の session list から)。
-fn herdr_running_sockets(bin: &Path) -> HashMap<String, String> {
+/// herdr の running セッション name → workspace ラベル集合。session list を
+/// 1 回、running セッションごとに workspace list を 1 回で先読みする
+/// (どの行から聞かれるかに依らず取得回数が決まる)。workspace list の失敗は
+/// 空集合 (セッションは running なので main は active、Issue は inactive)。
+fn herdr_running_workspaces(bin: &Path) -> HashMap<String, HashSet<String>> {
     herdr_sessions(bin)
         .and_then(|v| v["sessions"].as_array().cloned())
         .map(|sessions| {
@@ -244,7 +241,11 @@ fn herdr_running_sockets(bin: &Path) -> HashMap<String, String> {
                 .iter()
                 .filter(|s| s["running"].as_bool() == Some(true))
                 .filter_map(|s| {
-                    Some((s["name"].as_str()?.to_owned(), s["socket_path"].as_str()?.to_owned()))
+                    let name = s["name"].as_str()?.to_owned();
+                    let sock = s["socket_path"].as_str()?;
+                    let labels =
+                        herdr_workspaces(bin, sock).into_iter().map(|(_, label)| label).collect();
+                    Some((name, labels))
                 })
                 .collect()
         })
