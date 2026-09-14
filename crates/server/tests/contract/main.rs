@@ -815,6 +815,88 @@ fn list_issues_probes_session_managers_once_regardless_of_issue_count() {
 }
 
 #[test]
+fn list_issues_fetches_herdr_workspaces_once_per_running_session() {
+    // Arrange: herdr の repo セッションに 42 の workspace があり、open な Issue
+    // は 42, 43, 44 の 3 件 (42, 43 は worktree あり)。workspace list は
+    // running セッション数 (1) だけ呼ばれ、行数 (3) には依らない
+    let env = TestEnv::new();
+    let home = env.home_str();
+    let sock = herdr_sock(&home);
+    env.write_home("ghq/github.com/owner/repo/.gitkeep", "")
+        .write_home("worktrees/github.com/owner/repo/42/.gitkeep", "")
+        .write_home("worktrees/github.com/owner/repo/43/.gitkeep", "")
+        .stub(
+            "worktree list --porcelain",
+            &format!(
+                "worktree {home}/worktrees/github.com/owner/repo/42\nHEAD aaa\nbranch refs/heads/feature/42\n\nworktree {home}/worktrees/github.com/owner/repo/43\nHEAD bbb\nbranch refs/heads/feature/43\n\n"
+            ),
+        )
+        .stub("^herdr session list --json$", &herdr_sessions_json(&home, true))
+        .stub(
+            &format!("^HERDR_SOCKET_PATH={sock} herdr workspace list$"),
+            &herdr_workspaces_json(&[("w1", "repo"), ("w7", "42")]),
+        )
+        .stub("^docker ps -a", "")
+        .stub(
+            "^tracker list-issues-v1 --repo owner/repo$",
+            r#"[{"id":"42","title":"A"},{"id":"43","title":"B"},{"id":"44","title":"C"}]"#,
+        );
+
+    // Act
+    let out = env.run(&["list-issues", "--repo", "owner/repo"]);
+
+    // Assert
+    assert_eq!(out.status, Some(0));
+    let actives: Vec<(String, bool)> = out.stdout_json()["issues"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| (row["id"].as_str().unwrap().to_owned(), row["active"].as_bool().unwrap()))
+        .collect();
+    assert_eq!(
+        actives,
+        vec![
+            ("main".to_owned(), true),
+            ("42".to_owned(), true),
+            ("43".to_owned(), false),
+            ("44".to_owned(), false),
+        ]
+    );
+    let invocations = env.invocations();
+    let count = |needle: &str| invocations.iter().filter(|l| l.contains(needle)).count();
+    assert_eq!(count("herdr session list"), 1, "{invocations:?}");
+    assert_eq!(count("herdr workspace list"), 1, "{invocations:?}");
+}
+
+#[test]
+fn list_issues_treats_failed_herdr_workspace_list_as_main_only() {
+    // Arrange: セッションは running だが workspace list が失敗する (未スタブ)。
+    // Issue 42 は worktree あり
+    let env = TestEnv::new();
+    let home = env.home_str();
+    env.write_home("ghq/github.com/owner/repo/.gitkeep", "")
+        .write_home("worktrees/github.com/owner/repo/42/.gitkeep", "")
+        .stub(
+            "worktree list --porcelain",
+            &format!(
+                "worktree {home}/worktrees/github.com/owner/repo/42\nHEAD aaa\nbranch refs/heads/feature/42\n\n"
+            ),
+        )
+        .stub("^herdr session list --json$", &herdr_sessions_json(&home, true))
+        .stub("^docker ps -a", "")
+        .stub("^tracker list-issues-v0 --repo owner/repo$", r#"[{"id":"42","title":"A"}]"#);
+
+    // Act
+    let out = env.run(&["list-issues", "--repo", "owner/repo"]);
+
+    // Assert: main は running で active、Issue は workspace 不明なので inactive
+    assert_eq!(out.status, Some(0));
+    let rows = out.stdout_json()["issues"].clone();
+    assert_eq!((rows[0]["id"].as_str(), rows[0]["active"].as_bool()), (Some("main"), Some(true)));
+    assert_eq!((rows[1]["id"].as_str(), rows[1]["active"].as_bool()), (Some("42"), Some(false)));
+}
+
+#[test]
 fn list_issues_treats_stopped_tmux_server_as_no_sessions() {
     // Arrange: tmux サーバーが起動していない (list-sessions は失敗 = 未スタブ)
     let env = TestEnv::new();
