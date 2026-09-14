@@ -12,7 +12,8 @@
 
 use crate::infra::exec;
 use crate::infra::settings::{Managers, SessionManager};
-use std::path::Path;
+use std::collections::{HashMap, HashSet};
+use std::path::{Path, PathBuf};
 use wsm_shared::domains::{self as domain, RepoRef, WorkspaceId};
 
 fn tmux_exists(bin: &Path, session: &str) -> bool {
@@ -158,8 +159,8 @@ pub fn herdr_blocks_main_removal(repo: &RepoRef, managers: &Managers) -> bool {
 /// open で使ったマネージャーのセッションに、すでにクライアント (端末タブ) が
 /// アタッチしているか。UI はこれが true のとき Terminal.open_tab を省き、同一
 /// セッションへの多重アタッチ (タブ増殖) を防ぐ。タブ状態を wsm が保持する
-/// わけではなく、その都度 live に問い合わせる (workspace_session_exists と同じ
-/// 系統の観測)。判定の粒度はマネージャーのセッション粒度に従う:
+/// わけではなく、その都度 live に問い合わせる (ensure 直後の観測なので
+/// Snapshot は使わない)。判定の粒度はマネージャーのセッション粒度に従う:
 /// - tmux: Workspace 単位 (`list-clients` が非空)
 /// - herdr: リポジトリ単位 (プロセステーブルに GUI クライアントがある)
 ///
@@ -181,24 +182,73 @@ pub fn has_attached_client(
 
 // --- Workspace とセッションの対応 (設定されたマネージャーを横断) ---
 
-/// 設定されたマネージャーを横断した存在確認。tmux はセッション名で、herdr は
-/// リポジトリセッション (+ Issue なら workspace ラベル) で判定する。
-pub fn workspace_session_exists(repo: &RepoRef, id: &WorkspaceId, managers: &Managers) -> bool {
-    if let Some(bin) = managers.path(SessionManager::Tmux) {
-        if tmux_exists(bin, &domain::tmux_session_name(repo, id)) {
+/// 設定されたマネージャーの状態を、コマンド開始時に 1 回の照会で取り込んだ
+/// スナップショット。一覧系ユースケースは Issue ごとに外部コマンドを起動する
+/// 代わりにこれと照合するため、起動回数が Issue 数に依らず固定になり、全行が
+/// 同じ時点の状態で判定される。状態を変える経路 (ensure / remove /
+/// has_attached_client) は変更直後の再確認が要るため live に照会する。
+pub struct Snapshot {
+    /// tmux の全セッション名 (サーバー未起動は空)
+    tmux_sessions: HashSet<String>,
+    /// herdr が設定されていればその running セッション表
+    herdr: Option<HerdrSnapshot>,
+}
+
+struct HerdrSnapshot {
+    bin: PathBuf,
+    /// running なセッションの name → socket_path
+    sockets: HashMap<String, String>,
+}
+
+impl Snapshot {
+    pub fn take(managers: &Managers) -> Self {
+        let tmux_sessions =
+            managers.path(SessionManager::Tmux).map(tmux_session_names).unwrap_or_default();
+        let herdr = managers.path(SessionManager::Herdr).map(|bin| HerdrSnapshot {
+            bin: bin.to_owned(),
+            sockets: herdr_running_sockets(bin),
+        });
+        Self { tmux_sessions, herdr }
+    }
+
+    /// Workspace のセッションが存在するか。tmux はセッション名で、herdr は
+    /// リポジトリセッション (+ Issue なら workspace ラベル) で判定する。
+    pub fn workspace_exists(&self, repo: &RepoRef, id: &WorkspaceId) -> bool {
+        if self.tmux_sessions.contains(&domain::tmux_session_name(repo, id)) {
             return true;
         }
+        let Some(herdr) = &self.herdr else { return false };
+        let Some(sock) = herdr.sockets.get(&domain::herdr_session_name(repo)) else {
+            return false;
+        };
+        match id {
+            WorkspaceId::Main => true,
+            WorkspaceId::Issue(issue) => herdr_workspace_id(&herdr.bin, sock, issue).is_some(),
+        }
     }
-    let Some(bin) = managers.path(SessionManager::Herdr) else { return false };
-    let repo_session = domain::herdr_session_name(repo);
-    if !herdr_session_running(bin, &repo_session) {
-        return false;
-    }
-    match id {
-        WorkspaceId::Main => true,
-        WorkspaceId::Issue(issue) => herdr_socket_path(bin, &repo_session)
-            .is_some_and(|sock| herdr_workspace_id(bin, &sock, issue).is_some()),
-    }
+}
+
+/// tmux の全セッション名。サーバー未起動 (list-sessions が失敗) は空。
+fn tmux_session_names(bin: &Path) -> HashSet<String> {
+    exec::stdout_if_ok(bin, &["list-sessions", "-F", "#{session_name}"])
+        .map(|out| out.lines().filter(|l| !l.is_empty()).map(str::to_owned).collect())
+        .unwrap_or_default()
+}
+
+/// herdr の running セッションの name → socket_path (1 回の session list から)。
+fn herdr_running_sockets(bin: &Path) -> HashMap<String, String> {
+    herdr_sessions(bin)
+        .and_then(|v| v["sessions"].as_array().cloned())
+        .map(|sessions| {
+            sessions
+                .iter()
+                .filter(|s| s["running"].as_bool() == Some(true))
+                .filter_map(|s| {
+                    Some((s["name"].as_str()?.to_owned(), s["socket_path"].as_str()?.to_owned()))
+                })
+                .collect()
+        })
+        .unwrap_or_default()
 }
 
 /// Workspace のセッションを冪等に用意し、アタッチ対象のセッション名を返す。

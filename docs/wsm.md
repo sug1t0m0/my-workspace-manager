@@ -291,6 +291,13 @@ Workspace に紐づくターミナルセッションの管理。現在の実装�
   DevContainer の 🐳 ウィンドウ(DevContainer 節)はオーケストレーション層が
   この操作で配線し、DevContainer ロールと SessionManager ロールは互いを知らない
 
+state の照会は 2 系統ある。一覧系 (list-repos / list-issues /
+list-group-issues / list-workspaces) はコマンド開始時に 1 回だけ全マネージャーの
+状態を取り込んだ**スナップショット**(tmux: `list-sessions`、herdr:
+`session list --json`)と照合し、外部コマンドの起動回数を Issue 数に依らず
+固定にする(全行が同じ時点の状態で判定される)。状態を変える経路
+(open / remove) は変更直後の再確認が要るため、その都度 live に照会する。
+
 Workspace とセッションの対応は実装ごとに異なる。名前・ラベルの導出は
 ドメイン層が行い、実装は導出済みの値を使うだけ。
 
