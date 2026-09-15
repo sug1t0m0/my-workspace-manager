@@ -62,6 +62,7 @@ pub fn list_group_issues(
     let trackers = settings::trackers(home)?;
     let plugin = trackers.named_or_default(tracker_name.as_deref())?;
     let sessions = session::Snapshot::take(&settings::session_managers(home));
+    let containers = devcontainer::Snapshot::take();
     let (issues, next_cursor) = tracker::group_issues(plugin, group, cursor.as_deref());
 
     // 同じ応答に親が居る item は、ドリルで親の下にも出るためトップから隠す
@@ -91,7 +92,7 @@ pub fn list_group_issues(
                 ns_repo,
                 active,
                 false,
-                devcontainer::state(&repo, &item.id),
+                containers.state(&repo, &item.id),
                 item.has_children,
                 parent_fetched,
             ))
@@ -180,6 +181,7 @@ pub fn list_repos(home: &Path, group: Option<String>, tracker_name: Option<Strin
 pub fn list_workspaces(home: &Path) -> CmdResult {
     let paths = paths(home);
     let sessions = session::Snapshot::take(&settings::session_managers(home));
+    let containers = devcontainer::Snapshot::take();
     let trackers = settings::trackers(home)?;
     let mut rows = Vec::new();
     for entry in repostore::entries(home)? {
@@ -191,7 +193,7 @@ pub fn list_workspaces(home: &Path) -> CmdResult {
                 json!({
                     "ns_repo": repo.ns_repo(), "id": "main", "title": "main",
                     "active": true, "closed": false,
-                    "devcontainer": devcontainer::state(repo, "main"),
+                    "devcontainer": containers.state(repo, "main"),
                 })
             });
 
@@ -205,7 +207,7 @@ pub fn list_workspaces(home: &Path) -> CmdResult {
                 json!({
                     "ns_repo": repo.ns_repo(), "id": id, "title": title,
                     "active": active, "closed": closed,
-                    "devcontainer": devcontainer::state(repo, &id),
+                    "devcontainer": containers.state(repo, &id),
                 })
             })
             .collect();
@@ -227,6 +229,7 @@ pub fn list_issues(
     let entry = repostore::find(home, repo)?;
     let paths = paths(home);
     let sessions = session::Snapshot::take(&settings::session_managers(home));
+    let containers = devcontainer::Snapshot::take();
     let trackers = settings::trackers(home)?;
     let plugin =
         trackers.for_repo(repo, entry.as_ref().and_then(|e| e.tracker.as_deref()))?;
@@ -247,11 +250,11 @@ pub fn list_issues(
         let (active, dc) = match item.repo.as_deref().and_then(|r| RepoRef::parse(r)) {
             Some(foreign) if item_repo != ns_repo => (
                 sessions.workspace_exists(&foreign, &WorkspaceId::Issue(item.id.clone())),
-                devcontainer::state(&foreign, &item.id).to_owned(),
+                containers.state(&foreign, &item.id).to_owned(),
             ),
             _ => (
                 active_ids.iter().any(|active| active == &item.id),
-                devcontainer::state(repo, &item.id).to_owned(),
+                containers.state(repo, &item.id).to_owned(),
             ),
         };
         issue_entry(&item.id, &item.title, item_repo, active, false, &dc, item.has_children, false)
@@ -272,7 +275,7 @@ pub fn list_issues(
         &ns_repo,
         sessions.workspace_exists(repo, &WorkspaceId::Main),
         false,
-        devcontainer::state(repo, "main"),
+        containers.state(repo, "main"),
         false,
         false,
     );
@@ -288,7 +291,7 @@ pub fn list_issues(
             let (title, closed) = plugin
                 .and_then(|t| tracker::issue(t, repo, id))
                 .unwrap_or_else(|| ("unknown".to_owned(), true));
-            issue_entry(id, &title, &ns_repo, true, closed, devcontainer::state(repo, id), false, true)
+            issue_entry(id, &title, &ns_repo, true, closed, containers.state(repo, id), false, true)
         });
 
     Ok(json!({

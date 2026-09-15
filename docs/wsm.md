@@ -371,7 +371,15 @@ Workspace 上で起動するコンテナ。1 つの Workspace に複数の設定
 | `<ws>/.devcontainer/<name>/devcontainer.json` | `repo-<name>` |
 | 上記以外 (フォールバック。`WSM_DEFAULT_DEVCONTAINER_CONFIG` で変更可) | `default` |
 
-状態は `running` / `stopped` / `none` の 3 値。
+状態は `running` / `stopped` / `none` の 3 値(`(ns_repo, id)` に一致する
+コンテナが 1 つでも running なら running、あるが running が無ければ stopped)。
+
+state の照会は SessionManager と同じく 2 系統ある。一覧系はコマンド開始時に
+1 回だけ `docker ps -a --filter label=wsm.ns-repo` で wsm 管理下の全コンテナを
+識別ラベル付きで取り込んだ**スナップショット**と照合し、docker の起動回数を
+Workspace 数に依らず 1 回にする。スナップショットは取り込み後に変化せず、
+寿命は 1 コマンドの処理中だけ。docker が使えないときは空 (全行 none)。
+up / down は変更直後の再確認が要るため、その都度 live に照会する。
 
 起動 (up) は冪等で、実行前の状態に応じて結果が決まる:
 
