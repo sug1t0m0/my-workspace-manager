@@ -3,6 +3,7 @@
 
 use wsm_shared::domains::{RepoRef, WorkspaceId};
 use crate::infra::exec;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 
 /// up の冪等契約: 実行前の状態に応じて結果が決まる。
@@ -23,16 +24,61 @@ impl Outcome {
     }
 }
 
-/// (repo, id) に一致するコンテナの集約状態: running / stopped / none。
-pub fn state(repo: &RepoRef, id: &str) -> &'static str {
-    let ns_repo = repo.ns_repo();
-    let states =
-        exec::stdout_if_ok("docker", &labels_args(&ns_repo, id, None, "ps", "-a", "{{.State}}"));
-    match states {
-        Some(s) if s.lines().any(|l| l == "running") => "running",
-        Some(s) if s.lines().any(|l| !l.is_empty()) => "stopped",
-        _ => "none",
+/// wsm 管理下の全コンテナの状態を、コマンド開始時に 1 回の docker ps で
+/// 取り込んだスナップショット。一覧系ユースケースは Workspace ごとに docker を
+/// 起動する代わりにこれと照合する (起動回数は Issue 数に依らず 1 回、全行が
+/// 同じ時点の状態)。取り込みは take() で完結し、以後は不変。
+/// 状態を変える経路 (up / down) は変更直後の再確認が要るため live に照会する。
+pub struct Snapshot {
+    /// (ns_repo, id) → 集約状態 (running / stopped)。行が無ければ none
+    states: HashMap<(String, String), &'static str>,
+}
+
+impl Snapshot {
+    pub fn take() -> Self {
+        // wsm.ns-repo ラベルを持つコンテナだけを対象にし、識別ラベルと状態を
+        // タブ区切りで出す (ラベル値に含まれ得ない区切り)
+        let out = exec::stdout_if_ok(
+            "docker",
+            &[
+                "ps",
+                "-a",
+                "--filter",
+                "label=wsm.ns-repo",
+                "--format",
+                "{{.Label \"wsm.ns-repo\"}}\t{{.Label \"wsm.issue-id\"}}\t{{.State}}",
+            ],
+        );
+        Self { states: aggregate_states(out.as_deref().unwrap_or("")) }
     }
+
+    /// (repo, id) に一致するコンテナの集約状態: running / stopped / none。
+    pub fn state(&self, repo: &RepoRef, id: &str) -> &'static str {
+        self.states.get(&(repo.ns_repo(), id.to_owned())).copied().unwrap_or("none")
+    }
+}
+
+/// docker ps の出力 (`ns_repo \t id \t state` の行) を (ns_repo, id) ごとに
+/// 集約する純粋関数。1 つでも running があれば running、行はあるが running が
+/// 無ければ stopped。フィールドの欠けた行は捨てる。
+fn aggregate_states(out: &str) -> HashMap<(String, String), &'static str> {
+    out.lines()
+        .filter_map(|line| {
+            let mut fields = line.split('\t');
+            let key = (fields.next()?.to_owned(), fields.next()?.to_owned());
+            let state = if fields.next()? == "running" { "running" } else { "stopped" };
+            Some((key, state))
+        })
+        .fold(HashMap::new(), |mut acc, (key, state)| {
+            acc.entry(key)
+                .and_modify(|cur| {
+                    if state == "running" {
+                        *cur = "running";
+                    }
+                })
+                .or_insert(state);
+            acc
+        })
 }
 
 /// (repo, id) に一致するコンテナをすべて停止・削除する。冪等。

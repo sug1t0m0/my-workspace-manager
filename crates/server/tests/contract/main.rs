@@ -758,6 +758,10 @@ fn invalid_issue_ids_from_plugin_are_dropped() {
 /// 一覧系が tmux のセッション名を一括で取るコマンド (フェイクのログ行の形)。
 const TMUX_LIST_SESSIONS: &str = "^tmux list-sessions -F #\\{session_name\\}$";
 
+/// 一覧系が wsm 管理下の全コンテナを一括で取るコマンド (前方一致。応答は
+/// `ns_repo \t id \t state` の行)。
+const DOCKER_PS_ALL: &str = "^docker ps -a --filter label=wsm.ns-repo --format ";
+
 #[test]
 fn list_issues_probes_session_managers_once_regardless_of_issue_count() {
     // Arrange: open な Issue が 3 件、うち 42 は tmux セッション、43 は herdr の
@@ -897,6 +901,22 @@ fn list_issues_treats_failed_herdr_workspace_list_as_main_only() {
 }
 
 #[test]
+fn list_issues_treats_docker_failure_as_no_containers() {
+    // Arrange: docker が使えない (ps は未スタブ → exit 1)
+    let env = TestEnv::new();
+    env.stub("^tracker list-issues-v0 --repo owner/repo$", r#"[{"id":"42","title":"A"}]"#);
+
+    // Act
+    let out = env.run(&["list-issues", "--repo", "owner/repo"]);
+
+    // Assert: 全行 none で一覧は成立する
+    assert_eq!(out.status, Some(0));
+    let rows = out.stdout_json()["issues"].clone();
+    assert_eq!(rows[0]["devcontainer"], "none");
+    assert_eq!(rows[1]["devcontainer"], "none");
+}
+
+#[test]
 fn list_issues_treats_stopped_tmux_server_as_no_sessions() {
     // Arrange: tmux サーバーが起動していない (list-sessions は失敗 = 未スタブ)
     let env = TestEnv::new();
@@ -1024,8 +1044,7 @@ fn cross_repo_children_carry_their_home_repo() {
     // Arrange: sub-issues はリポジトリ横断で張れる。よその子は repo 付きで返り、
     // セッション・コンテナはその repo の文脈で見る
     let env = TestEnv::new();
-    env.stub("^docker ps -a --filter label=wsm.ns-repo=owner/repo ", "")
-        .stub("^docker ps -a --filter label=wsm.ns-repo=owner/lib ", "running\n")
+    env.stub(DOCKER_PS_ALL, "owner/lib\t9\trunning\n")
         .stub(TMUX_LIST_SESSIONS, "owner_lib_9\n")
         .stub(
             "^tracker list-issues-v2 --repo owner/repo --parent 42$",
@@ -1241,13 +1260,13 @@ fn list_issues_shows_orphaned_worktrees_with_real_state_in_worktree_order() {
 
 #[test]
 fn list_issues_aggregates_devcontainer_states() {
-    // Arrange: Issue 42 のコンテナは停止のみ、43 は停止+稼働の混在
+    // Arrange: Issue 42 のコンテナは停止のみ、43 は停止+稼働の混在。よその
+    // リポジトリのコンテナ (other/repo の 42) は混ざらない。1 回の docker ps
+    // で全部返る
     let env = TestEnv::new();
-    env.stub("^docker ps -a --filter label=wsm.ns-repo=owner/repo --filter label=wsm.issue-id=main ", "")
-        .stub("^docker ps -a --filter label=wsm.ns-repo=owner/repo --filter label=wsm.issue-id=42 ", "exited\n")
-        .stub(
-            "^docker ps -a --filter label=wsm.ns-repo=owner/repo --filter label=wsm.issue-id=43 ",
-            "exited\nrunning\n",
+    env.stub(
+            DOCKER_PS_ALL,
+            "owner/repo\t42\texited\nowner/repo\t43\texited\nother/repo\t42\trunning\nowner/repo\t43\trunning\n",
         )
         .stub(
             "^tracker list-issues-v1 --repo owner/repo$",
@@ -1257,8 +1276,15 @@ fn list_issues_aggregates_devcontainer_states() {
     // Act
     let out = env.run(&["list-issues", "--repo", "owner/repo"]);
 
-    // Assert: 1 つでも running があれば running、行はあるが running がなければ stopped
+    // Assert: 1 つでも running があれば running、行はあるが running がなければ
+    // stopped。docker の起動は行数に依らず 1 回
     assert_eq!(out.status, Some(0));
+    assert_eq!(
+        env.invocations().iter().filter(|l| l.starts_with("docker ps")).count(),
+        1,
+        "{:?}",
+        env.invocations()
+    );
     assert_eq!(
         out.stdout_json(),
         json!({ "issues": [
