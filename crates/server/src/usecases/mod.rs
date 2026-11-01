@@ -144,10 +144,19 @@ pub fn list_session_managers(home: &Path) -> CmdResult {
     ))
 }
 
-pub fn list_repos(home: &Path, group: Option<String>, tracker_name: Option<String>) -> CmdResult {
+pub fn list_repos(
+    home: &Path,
+    group: Option<String>,
+    tracker_name: Option<String>,
+    repo: Option<RepoRef>,
+) -> CmdResult {
     let group = group.unwrap_or_default();
 
-    let repos: Vec<RepoEntry> = if group.is_empty() || group == "none" {
+    let repos: Vec<RepoEntry> = if let Some(repo) = repo {
+        // 1 件照会: RepoStore にあるかだけを見る (group / tracker は無視)。
+        // active_count もその 1 件だけ数える
+        repostore::find(home, &repo)?.into_iter().collect()
+    } else if group.is_empty() || group == "none" {
         let mut entries = repostore::entries(home)?;
         entries.sort_by_key(|entry| entry.repo.ns_repo());
         entries
