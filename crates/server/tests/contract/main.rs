@@ -168,6 +168,8 @@ fn parameter_shapes_are_validated() {
         (&["list-issues", "--repo", "a/b/c"], "Invalid repo: a/b/c"),
         (&["list-issues", "--repo", "../repo"], "Invalid repo: ../repo"),
         (&["list-issues", "--repo", "-owner/repo"], "Invalid repo: -owner/repo"),
+        // list-repos の任意の --repo も同じ検証を通る
+        (&["list-repos", "--repo", "owner/repo;rm -rf"], "Invalid repo: owner/repo;rm -rf"),
         // issue: 英数と - のみ (先頭は英数)。メタ文字・トラバーサル・オプション注入を弾く
         (&["open", "--repo", "owner/repo", "--issue", "CHH_111"], "Invalid issue: CHH_111"),
         (&["remove", "--repo", "owner/repo", "--issue", "42;rm -rf"], "Invalid issue: 42;rm -rf"),
@@ -308,6 +310,78 @@ fn list_repos_filters_group_repos_by_local_clones() {
     // Assert
     assert_eq!(out.status, Some(0));
     assert_eq!(out.stdout_json(), json!([{ "ns_repo": "owner/repo", "active_count": 0 }]));
+}
+
+#[test]
+fn list_repos_with_repo_returns_only_that_repo() {
+    // Arrange: ローカルに 2 リポジトリ。照会する owner/repo は main セッションが生きている
+    let env = TestEnv::new();
+    env.write_home("ghq/github.com/owner/repo/.gitkeep", "")
+        .write_home("ghq/github.com/owner/tool/.gitkeep", "")
+        .stub("^ghq list$", "github.com/owner/repo\ngithub.com/owner/tool\n")
+        .stub("^tmux has-session -t =owner_repo$", "");
+
+    // Act
+    let out = env.run(&["list-repos", "--repo", "owner/repo"]);
+
+    // Assert: 該当 1 件だけ。active_count の判定 (worktree・セッション) も
+    // 他のリポジトリには及ばない
+    assert_eq!(out.status, Some(0));
+    assert_eq!(out.stdout_json(), json!([{ "ns_repo": "owner/repo", "active_count": 1 }]));
+    assert!(
+        !env.invocations().iter().any(|l| l.contains("owner/tool") || l.contains("owner_tool")),
+        "other repos must not be inspected: {:?}",
+        env.invocations()
+    );
+}
+
+#[test]
+fn list_repos_with_repo_ignores_group() {
+    // Arrange: owner/repo はローカルにあるが repo-group 5 には属さない
+    let env = TestEnv::new();
+    env.stub("^tracker repo-group-repos-v0 --group 5$", r#"["owner/other"]"#);
+
+    // Act
+    let out = env.run(&["list-repos", "--group", "5", "--repo", "owner/repo"]);
+
+    // Assert: --repo が優先され、Tracker には触れない
+    assert_eq!(out.status, Some(0));
+    assert_eq!(out.stdout_json(), json!([{ "ns_repo": "owner/repo", "active_count": 0 }]));
+    assert!(
+        !env.invocations().iter().any(|l| l.starts_with("tracker ")),
+        "--repo must not touch the tracker: {:?}",
+        env.invocations()
+    );
+}
+
+#[test]
+fn list_repos_with_unknown_repo_returns_empty() {
+    // Arrange: ストアには owner/repo だけがある (既定)
+    let env = TestEnv::new();
+
+    // Act
+    let out = env.run(&["list-repos", "--repo", "owner/missing"]);
+
+    // Assert: 未登録はエラーではなく空配列
+    assert_eq!(out.status, Some(0));
+    assert_eq!(out.stdout_json(), json!([]));
+}
+
+#[test]
+fn list_repos_with_repo_across_hosts_is_an_error() {
+    // Arrange: 同じ ns/repo が 2 つの host にある (識別子の一意性規約に違反)
+    let env = TestEnv::new();
+    env.stub("^ghq list$", "github.com/owner/repo\ngitlab.com/owner/repo\n");
+
+    // Act
+    let out = env.run(&["list-repos", "--repo", "owner/repo"]);
+
+    // Assert: lookup と同じく ambiguous repository
+    assert_eq!(out.status, Some(1));
+    assert_eq!(
+        out.stderr_json(),
+        json!({ "error": "ambiguous repository: owner/repo (github.com, gitlab.com)" })
+    );
 }
 
 // --- RepoStore (host とカスタムリポジトリ) ---

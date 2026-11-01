@@ -34,9 +34,12 @@ fn run(args: &[String]) -> CmdResult {
             let group = required_group(rest)?;
             usecases::list_group_issues(&home, &group, optional_tracker(rest)?, optional_cursor(rest)?)
         }
-        "list-repos" => {
-            usecases::list_repos(&home, flag_value(rest, "--group"), optional_tracker(rest)?)
-        }
+        "list-repos" => usecases::list_repos(
+            &home,
+            flag_value(rest, "--group"),
+            optional_tracker(rest)?,
+            optional_repo(rest)?,
+        ),
         "list-issues" => usecases::list_issues(
             &home,
             &required_repo(rest)?,
@@ -85,8 +88,14 @@ fn flag_values(args: &[String], flag: &str) -> Vec<String> {
 
 /// --repo をパースして RepoRef を得る (パース = 検証)。
 fn required_repo(args: &[String]) -> Result<RepoRef, String> {
-    let value = flag_value(args, "--repo").ok_or("--repo required")?;
-    RepoRef::parse(&value).ok_or_else(|| format!("Invalid repo: {value}"))
+    optional_repo(args)?.ok_or_else(|| "--repo required".to_owned())
+}
+
+/// --repo (任意) をパースする。検証は required_repo と同じ。
+fn optional_repo(args: &[String]) -> Result<Option<RepoRef>, String> {
+    flag_value(args, "--repo")
+        .map(|value| RepoRef::parse(&value).ok_or_else(|| format!("Invalid repo: {value}")))
+        .transpose()
 }
 
 /// --issue をパースして WorkspaceId を得る (パース = 検証)。
