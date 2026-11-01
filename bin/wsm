@@ -398,7 +398,7 @@ _pick_workspace() {
 # Issue 選択後の作業リポジトリ選択。既定 (先頭) は Issue の所属リポジトリで、
 # 同じ repo-group のローカルにあるリポジトリを代わりに選べる。
 # 所属リポジトリのローカル存在は repo-group のリンク設定に依らず RepoStore
-# 全体 (list-repos --group none) で判定する — グループの Issue 一覧は検索で
+# に直接 (list-repos --repo) 問い合わせる — グループの Issue 一覧は検索で
 # 取るため、repo-group にリンクされていないリポジトリの Issue も並ぶ。
 # 所属リポジトリがローカルにない (アンブレラ等、Issue だけの置き場) ときは
 # 候補から外す — 選んでも開けないため。候補が 1 つならそれで確定する。
@@ -407,8 +407,9 @@ _pick_work_repo() {
   local TAB=$'\t'
   local items=() home_local=false
 
-  # 所属リポジトリ (ローカルにあれば先頭 = 既定)
-  local home_active=$(_server list-repos --group none \
+  # 所属リポジトリ (ローカルにあれば先頭 = 既定)。--repo を知らない古い
+  # server は全件を返すため、ns_repo でも絞る
+  local home_active=$(_server list-repos --repo "$home_repo" \
     | jq -r --arg repo "$home_repo" 'first(.[] | select(.ns_repo == $repo) | .active_count)')
   if [[ -n "$home_active" ]]; then
     home_local=true
