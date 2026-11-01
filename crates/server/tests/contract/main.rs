@@ -313,24 +313,25 @@ fn list_repos_filters_group_repos_by_local_clones() {
 
 #[test]
 fn list_repos_with_repo_returns_only_that_repo() {
-    // Arrange: ローカルに 2 リポジトリ。照会する owner/repo は main セッションが生きている
+    // Arrange: ローカルに 2 リポジトリ (どちらもクローンの実体あり)
     let env = TestEnv::new();
+    let home = env.home_str();
     env.write_home("ghq/github.com/owner/repo/.gitkeep", "")
         .write_home("ghq/github.com/owner/tool/.gitkeep", "")
-        .stub("^ghq list$", "github.com/owner/repo\ngithub.com/owner/tool\n")
-        .stub("^tmux has-session -t =owner_repo$", "");
+        .stub("^ghq list$", "github.com/owner/repo\ngithub.com/owner/tool\n");
 
     // Act
     let out = env.run(&["list-repos", "--repo", "owner/repo"]);
 
-    // Assert: 該当 1 件だけ。active_count の判定 (worktree・セッション) も
-    // 他のリポジトリには及ばない
+    // Assert: 該当 1 件だけ。active_count の判定 (worktree の列挙) も照会した
+    // リポジトリにしか及ばない (セッション判定の方式には依存させない)
     assert_eq!(out.status, Some(0));
-    assert_eq!(out.stdout_json(), json!([{ "ns_repo": "owner/repo", "active_count": 1 }]));
-    assert!(
-        !env.invocations().iter().any(|l| l.contains("owner/tool") || l.contains("owner_tool")),
-        "other repos must not be inspected: {:?}",
-        env.invocations()
+    assert_eq!(out.stdout_json(), json!([{ "ns_repo": "owner/repo", "active_count": 0 }]));
+    let worktree_lists: Vec<String> =
+        env.invocations().into_iter().filter(|l| l.contains("worktree list")).collect();
+    assert_eq!(
+        worktree_lists,
+        vec![format!("git -C {home}/ghq/github.com/owner/repo worktree list --porcelain")]
     );
 }
 
