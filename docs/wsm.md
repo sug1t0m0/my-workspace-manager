@@ -508,10 +508,15 @@ remove は逆順で破棄する(Terminal は管理外なので対象外):
 ```
 
 `list-repos --group <id|none> [--tracker <name>]`
+`list-repos --repo <ns_repo>`
 → リポジトリ一覧。`none` は RepoStore (ghq + 設定 `[[repo]]`) の
 全リポジトリ、id 指定時はその repo-group に属し RepoStore にもあるもの
-(`--tracker` のインスタンスに照会。省略時は既定)。`active_count` は
-アクティブな Workspace 数。
+(`--tracker` のインスタンスに照会。省略時は既定)。`--repo` 指定時は
+RepoStore の該当 1 件だけ (未登録なら空配列、複数 host にまたがる重複は
+`ambiguous repository` のエラー) で、`--group` / `--tracker` は無視する。
+`active_count` はアクティブな Workspace 数 (リポジトリごとに worktree と
+セッションを問い合わせるため件数に比例して重い。1 件だけ知りたいときは
+`--repo` を使う)。
 ```json
 [{"ns_repo": "owner/repo", "active_count": 0}]
 ```
@@ -874,11 +879,11 @@ herdr 本来のモデル (セッションの中に workspace) に合わせる。
   置き場でクローンしない) ときは候補から外す — Issue の照会・ドリルは
   クローンなしで成立し、作業は常に別リポジトリで行う
 - 所属リポジトリのローカル存在は repo-group への所属 (GitHub では
-  Project にリンクされたリポジトリ) に依らず RepoStore 全体
-  (`list-repos --group none`) で判定する。グループの Issue 一覧は検索で
-  取るため、リンクのないリポジトリの Issue も並ぶ — `list-repos --group`
-  の交差だけで候補を組むと、Project にリポジトリをリンクしていない構成で
-  クローン済みの所属リポジトリが開けなくなる
+  Project にリンクされたリポジトリ) に依らず、RepoStore に直接
+  (`list-repos --repo <所属リポジトリ>`) 問い合わせる。グループの Issue
+  一覧は検索で取るため、リンクのないリポジトリの Issue も並ぶ —
+  `list-repos --group` の交差だけで候補を組むと、Project にリポジトリを
+  リンクしていない構成でクローン済みの所属リポジトリが開けなくなる
 - 所属と作業先が違うとき、workspace id は UI が修飾 id
   `<所属リポジトリ名>-<id>` (例 `api-42`。リポジトリ名の英数と `-` 以外は
   `-` に潰す) を導出する。作業先自身の同番号 Issue と衝突させず、
