@@ -445,11 +445,16 @@ _pick_work_repo() {
     printf '%s\n' "${items[1]}" | cut -f1
     return 0
   fi
-  items+=("__back__${TAB}◀ 戻る")
   local selected=$(printf '%s\n' "${items[@]}" \
-    | fzf --with-nth=2.. --delimiter=$'\t' --height=40% --reverse \
-          --prompt="Work repo> " --header="$header")
-  [[ -n "$selected" ]] && printf '%s\n' "$selected" | cut -f1
+    | _fzf_with_back --with-nth=2.. --delimiter=$'\t' --height=40% --reverse \
+                     --prompt="Work repo> " --header="${header}  (←: 戻る)")
+  if [[ "$selected" == "__back__" ]]; then
+    echo "__back__"
+    return 0
+  fi
+  if [[ -n "$selected" ]]; then
+    printf '%s\n' "$selected" | cut -f1
+  fi
 }
 
 # 作業リポジトリが Issue の所属リポジトリと違うときの workspace id。
@@ -689,7 +694,7 @@ case "$cmd" in
       # 段階選択 (Issue 起点): [マネージャー →] repo-group → Issue → 作業リポジトリ。
       # 「グループなし」とグループの Issue 一覧が空のときは従来の
       # リポジトリ起点 (リポジトリ → Issue) に落ちる。
-      # 各ピッカー末尾の「◀ 戻る」で 1 段戻れる (ESC はフロー全体のキャンセル)
+      # 各ピッカーで ← を押すと 1 段戻れる (ESC はフロー全体のキャンセル)
       pick_manager=false
       [[ "$WSM_TRANSPORT" == "local" && "$manager_set" == false ]] && pick_manager=true
 
