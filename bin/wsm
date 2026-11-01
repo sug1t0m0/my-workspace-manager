@@ -397,29 +397,40 @@ _pick_workspace() {
 
 # Issue 選択後の作業リポジトリ選択。既定 (先頭) は Issue の所属リポジトリで、
 # 同じ repo-group のローカルにあるリポジトリを代わりに選べる。
+# 所属リポジトリのローカル存在は repo-group のリンク設定に依らず RepoStore
+# 全体 (list-repos --group none) で判定する — グループの Issue 一覧は検索で
+# 取るため、repo-group にリンクされていないリポジトリの Issue も並ぶ。
 # 所属リポジトリがローカルにない (アンブレラ等、Issue だけの置き場) ときは
 # 候補から外す — 選んでも開けないため。候補が 1 つならそれで確定する。
 _pick_work_repo() {
   local group_id=$1 home_repo=$2 group_tracker=${3:-}
   local TAB=$'\t'
+  local items=() home_local=false
 
+  # 所属リポジトリ (ローカルにあれば先頭 = 既定)
+  local home_active=$(_server list-repos --group none \
+    | jq -r --arg repo "$home_repo" 'first(.[] | select(.ns_repo == $repo) | .active_count)')
+  if [[ -n "$home_active" ]]; then
+    home_local=true
+    local display="$home_repo"
+    if [[ "$home_active" -gt 0 ]]; then
+      display+="  (${home_active} workspaces)"
+    fi
+    items+=("${home_repo}${TAB}${display}  (この Issue のリポジトリ)")
+  fi
+
+  # 同じ repo-group のローカルにある他のリポジトリ
   local -a query=(list-repos --group "$group_id")
   [[ -n "$group_tracker" && "$group_tracker" != "-" ]] && query+=(--tracker "$group_tracker")
   local json=$(_server "${query[@]}")
-  local items=() home_local=false
   local repo active_count
   while IFS=$'\t' read -r repo active_count; do
-    [[ -n "$repo" ]] || continue
+    [[ -n "$repo" && "$repo" != "$home_repo" ]] || continue
     local display="$repo"
     if [[ "$active_count" -gt 0 ]]; then
       display+="  (${active_count} workspaces)"
     fi
-    if [[ "$repo" == "$home_repo" ]]; then
-      home_local=true
-      items=("${repo}${TAB}${display}  (この Issue のリポジトリ)" "${items[@]}")
-    else
-      items+=("${repo}${TAB}${display}")
-    fi
+    items+=("${repo}${TAB}${display}")
   done < <(printf '%s\n' "$json" | jq -r '.[] | "\(.ns_repo)\t\(.active_count)"')
 
   local header="Issue の所属: ${home_repo}"
