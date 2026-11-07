@@ -105,7 +105,8 @@ pub fn list_group_issues(
 
 /// 設定されたトラッカーの一覧と診断 (wsm doctor 用)。設定順で、
 /// installed はプラグイン実行ファイルの存在、ready / diagnosis / protocol は
-/// info-v0 の自己診断 (非対応なら null)。
+/// info-v0 の自己診断 (非対応なら null)。source は書かれていた設定ファイル
+/// (config.toml / config.local.toml のどちらかを doctor で見分けるため)。
 pub fn list_trackers(settings: &Settings) -> CmdResult {
     let trackers = settings.trackers()?;
     let default = trackers.default_name().map(str::to_owned);
@@ -123,6 +124,7 @@ pub fn list_trackers(settings: &Settings) -> CmdResult {
                 json!({
                     "name": t.name(),
                     "path": t.path().to_string_lossy(),
+                    "source": t.source().to_string_lossy(),
                     "default": Some(t.name()) == default.as_deref(),
                     "installed": installed,
                     "ready": ready,

@@ -736,6 +736,7 @@ fn list_trackers_reports_installed_and_ready_state() {
         json!([{
             "name": "fake",
             "path": format!("{}/tracker", env.fakes_dir_str()),
+            "source": env.home().join(".config/wsm/config.toml").to_string_lossy(),
             "default": true,
             "installed": true,
             "ready": true,
@@ -3028,4 +3029,34 @@ fn empty_path_in_overlay_disables_a_base_manager() {
 
     // Assert: 空文字は未設定と同じ扱いなので、overlay で base のマネージャーを外せる
     assert_eq!(out.stdout_json(), json!([{ "name": "herdr", "default": true }]));
+}
+
+#[test]
+fn list_trackers_reports_the_file_each_tracker_came_from() {
+    // Arrange: config.toml に fake、config.local.toml に other
+    let env = TestEnv::new();
+    env.write_home(
+        ".config/wsm/config.local.toml",
+        &format!("[[tracker]]\nname = \"other\"\npath = \"{}/tracker2\"\n", env.fakes_dir_str()),
+    );
+
+    // Act
+    let out = env.run(&["list-trackers"]);
+
+    // Assert: source で「共通 (config.toml) か、このマシン固有 (config.local.toml) か」が分かる
+    let sources: Vec<(String, String)> = out
+        .stdout_json()
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| (t["name"].as_str().unwrap().to_owned(), t["source"].as_str().unwrap().to_owned()))
+        .collect();
+    let config_dir = env.home().join(".config/wsm");
+    assert_eq!(
+        sources,
+        vec![
+            ("fake".to_owned(), config_dir.join("config.toml").to_string_lossy().into_owned()),
+            ("other".to_owned(), config_dir.join("config.local.toml").to_string_lossy().into_owned()),
+        ]
+    );
 }

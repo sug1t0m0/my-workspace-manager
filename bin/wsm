@@ -632,8 +632,10 @@ _do_doctor() {
     echo "  (none)          ❌ config.toml に [[tracker]] を追加"
   else
     # Note: `status` は zsh の読み取り専用変数 ($? の別名) のため使わない
-    local tr_path installed ready diagnosis health
-    while IFS=$'\t' read -r name is_default tr_path installed ready diagnosis; do
+    local tr_path tr_source installed ready diagnosis health
+    # 区切りは US (0x1f)。タブは zsh の IFS では空白扱いで、空フィールドがあると
+    # 連続する区切りが 1 つに潰れて列がずれるため
+    while IFS=$'\x1f' read -r name is_default tr_path tr_source installed ready diagnosis; do
       local label=$name
       [[ "$is_default" == "true" ]] && label+=" (既定)"
       if [[ "$installed" != "true" ]]; then
@@ -645,10 +647,12 @@ _do_doctor() {
       else
         health="✅ installed (info-v0 非対応)"
       fi
-      printf '  %-16s%s\n' "$label" "$health"
+      # source は書かれていた設定ファイル名 (config.toml = 共通 / config.local.toml = このマシン固有)。
+      # 診断文は長くなり得るので最後に置く。古い server は source を返さない ("-")
+      printf '  %-16s %-18s %s\n' "$label" "${tr_source:t}" "$health"
     # diagnosis は複数行になり得る (gh の stderr パススルー)。1 行表示に潰す
     done < <(printf '%s\n' "$tr_json" \
-      | jq -r '.[] | "\(.name)\t\(.default)\t\(.path)\t\(.installed)\t\(.ready)\t\((.diagnosis // "") | gsub("\n"; " "))"')
+      | jq -r '.[] | [.name, .default, .path, (.source // "-"), .installed, .ready, ((.diagnosis // "") | gsub("\n"; " "))] | map(tostring) | join("\u001f")')
   fi
 
   # UI の依存コマンド

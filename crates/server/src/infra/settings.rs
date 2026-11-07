@@ -105,6 +105,13 @@ impl Tracker {
     pub fn env(&self) -> &[(String, String)] {
         &self.env
     }
+
+    /// このインスタンスが書かれていた設定ファイル。`Settings::load` が読んだ
+    /// パス (`$XDG_CONFIG_HOME/wsm` または `~/.config/wsm` 配下。正規化は
+    /// しない)。診断用。
+    pub fn source(&self) -> &Path {
+        &self.source
+    }
 }
 
 /// 設定された Tracker プラグインの列 (`[[tracker]]` テーブル)。
