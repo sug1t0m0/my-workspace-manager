@@ -3,7 +3,9 @@
 //! 合成ビュー (active / 孤児 worktree) はここだけが知っている。
 //! 入力はドメインの型で受け取る (引数解釈は presentations の責務)。
 
-use crate::infra::settings;
+// presentations が依存するのは usecases だけ (docs/wsm.md の依存の向き)。
+// コマンドの入口で 1 回 load して各ユースケースに渡す設定の型をここから見せる。
+pub use crate::infra::settings::Settings;
 use crate::roles::{devcontainer, repostore, session, tracker, worktree};
 use serde_json::{json, Value};
 use std::collections::HashSet;
@@ -14,8 +16,8 @@ pub type CmdResult = Result<Value, String>;
 
 /// パス導出の基点を解決する (コマンド呼び出しごとに 1 回)。
 /// クローン本体のパスは RepoStore が解決する (RepoEntry.clone_path)。
-fn paths(home: &Path) -> domain::Paths {
-    domain::Paths { home: home.to_owned(), worktree_root: settings::worktree_root(home) }
+fn paths(settings: &Settings) -> domain::Paths {
+    domain::Paths { home: settings.home().to_owned(), worktree_root: settings.worktree_root() }
 }
 
 /// open な repo-group の一覧。設定された全トラッカーに並列で照会して束ね、
@@ -23,8 +25,8 @@ fn paths(home: &Path) -> domain::Paths {
 /// 先頭で、あとは設定順。トラッカー未設定は対話フローの入り口で設定誤りを
 /// 表面化させるため、縮退せずエラーにする (個々のトラッカーの失敗は
 /// そのトラッカーのグループが欠けるだけ)。
-pub fn list_repo_groups(home: &Path) -> CmdResult {
-    let trackers = settings::trackers(home)?;
+pub fn list_repo_groups(settings: &Settings) -> CmdResult {
+    let trackers = settings.trackers()?;
     trackers.default_tracker()?; // 未設定の検出
 
     let groups: Vec<Value> = std::thread::scope(|scope| {
@@ -54,14 +56,14 @@ pub fn list_repo_groups(home: &Path) -> CmdResult {
 /// 要るため、ここでは行わない)。親を持つ item はドリルとの重複を避けるため
 /// トップに出さず、作業中のものだけ孤児 (orphan) として浮上させる。
 pub fn list_group_issues(
-    home: &Path,
+    settings: &Settings,
     group: &str,
     tracker_name: Option<String>,
     cursor: Option<String>,
 ) -> CmdResult {
-    let trackers = settings::trackers(home)?;
+    let trackers = settings.trackers()?;
     let plugin = trackers.named_or_default(tracker_name.as_deref())?;
-    let sessions = session::Snapshot::take(&settings::session_managers(home));
+    let sessions = session::Snapshot::take(&settings.session_managers());
     let containers = devcontainer::Snapshot::take();
     let (issues, next_cursor) = tracker::group_issues(plugin, group, cursor.as_deref());
 
@@ -104,8 +106,8 @@ pub fn list_group_issues(
 /// 設定されたトラッカーの一覧と診断 (wsm doctor 用)。設定順で、
 /// installed はプラグイン実行ファイルの存在、ready / diagnosis / protocol は
 /// info-v0 の自己診断 (非対応なら null)。
-pub fn list_trackers(home: &Path) -> CmdResult {
-    let trackers = settings::trackers(home)?;
+pub fn list_trackers(settings: &Settings) -> CmdResult {
+    let trackers = settings.trackers()?;
     let default = trackers.default_name().map(str::to_owned);
     Ok(Value::Array(
         trackers
@@ -132,9 +134,9 @@ pub fn list_trackers(home: &Path) -> CmdResult {
     ))
 }
 
-pub fn list_session_managers(home: &Path) -> CmdResult {
-    let managers = settings::session_managers(home);
-    let default = settings::default_manager_name(home, &managers);
+pub fn list_session_managers(settings: &Settings) -> CmdResult {
+    let managers = settings.session_managers();
+    let default = settings.default_manager_name(&managers);
     Ok(Value::Array(
         managers
             .names()
@@ -145,7 +147,7 @@ pub fn list_session_managers(home: &Path) -> CmdResult {
 }
 
 pub fn list_repos(
-    home: &Path,
+    settings: &Settings,
     group: Option<String>,
     tracker_name: Option<String>,
     repo: Option<RepoRef>,
@@ -155,18 +157,18 @@ pub fn list_repos(
     let repos: Vec<RepoEntry> = if let Some(repo) = repo {
         // 1 件照会: RepoStore にあるかだけを見る (group / tracker は無視)。
         // active_count もその 1 件だけ数える
-        repostore::find(home, &repo)?.into_iter().collect()
+        repostore::find(settings, &repo)?.into_iter().collect()
     } else if group.is_empty() || group == "none" {
-        let mut entries = repostore::entries(home)?;
+        let mut entries = repostore::entries(settings)?;
         entries.sort_by_key(|entry| entry.repo.ns_repo());
         entries
     } else {
         // Tracker (repo-group 所属) と RepoStore (ローカルにある) の交差。
         // --tracker はグループを持つインスタンス (省略時は既定)
         let group = validated("group", group, domain::is_valid_group)?;
-        let trackers = settings::trackers(home)?;
+        let trackers = settings.trackers()?;
         let plugin = trackers.named_or_default(tracker_name.as_deref())?;
-        let entries = repostore::entries(home)?;
+        let entries = repostore::entries(settings)?;
         tracker::repo_group_repos(plugin, &group)
             .iter()
             .filter_map(|name| RepoRef::parse(name))
@@ -175,8 +177,8 @@ pub fn list_repos(
             .collect()
     };
 
-    let paths = paths(home);
-    let sessions = session::Snapshot::take(&settings::session_managers(home));
+    let paths = paths(settings);
+    let sessions = session::Snapshot::take(&settings.session_managers());
     Ok(Value::Array(
         repos
             .iter()
@@ -187,13 +189,13 @@ pub fn list_repos(
     ))
 }
 
-pub fn list_workspaces(home: &Path) -> CmdResult {
-    let paths = paths(home);
-    let sessions = session::Snapshot::take(&settings::session_managers(home));
+pub fn list_workspaces(settings: &Settings) -> CmdResult {
+    let paths = paths(settings);
+    let sessions = session::Snapshot::take(&settings.session_managers());
     let containers = devcontainer::Snapshot::take();
-    let trackers = settings::trackers(home)?;
+    let trackers = settings.trackers()?;
     let mut rows = Vec::new();
-    for entry in repostore::entries(home)? {
+    for entry in repostore::entries(settings)? {
         let repo = &entry.repo;
         let plugin = trackers.for_repo(repo, entry.tracker.as_deref())?;
         let main_entry = sessions
@@ -227,7 +229,7 @@ pub fn list_workspaces(home: &Path) -> CmdResult {
 }
 
 pub fn list_issues(
-    home: &Path,
+    settings: &Settings,
     repo: &RepoRef,
     parent: Option<String>,
     cursor: Option<String>,
@@ -235,11 +237,11 @@ pub fn list_issues(
     // 未登録のリポジトリ (アンブレラ等、Issue だけがありローカルクローンの
     // ないもの) でも照会は成立する。worktree 由来の情報 (active / 孤児) が
     // 出ないだけで、open は従来どおり lookup がエラーにする
-    let entry = repostore::find(home, repo)?;
-    let paths = paths(home);
-    let sessions = session::Snapshot::take(&settings::session_managers(home));
+    let entry = repostore::find(settings, repo)?;
+    let paths = paths(settings);
+    let sessions = session::Snapshot::take(&settings.session_managers());
     let containers = devcontainer::Snapshot::take();
-    let trackers = settings::trackers(home)?;
+    let trackers = settings.trackers()?;
     let plugin =
         trackers.for_repo(repo, entry.as_ref().and_then(|e| e.tracker.as_deref()))?;
 
@@ -312,25 +314,25 @@ pub fn list_issues(
     }))
 }
 
-pub fn list_devcontainer_configs(home: &Path, repo: &RepoRef, id: &WorkspaceId) -> CmdResult {
-    let entry = repostore::lookup(home, repo)?;
-    let paths = paths(home);
+pub fn list_devcontainer_configs(settings: &Settings, repo: &RepoRef, id: &WorkspaceId) -> CmdResult {
+    let entry = repostore::lookup(settings, repo)?;
+    let paths = paths(settings);
     let workspace = domain::workspace_path(&paths, &entry, id);
 
     let repo_entries = devcontainer::repo_configs(&workspace).into_iter().map(|(name, path)| {
         json!({ "name": name, "path": path.to_string_lossy(), "source": "repo" })
     });
-    let fallback_entry = settings::default_devcontainer_config(home)
+    let fallback_entry = settings.default_devcontainer_config()
         .map(|path| json!({ "name": "default", "path": path.to_string_lossy(), "source": "default" }));
 
     Ok(Value::Array(repo_entries.chain(fallback_entry).collect()))
 }
 
-pub fn open(home: &Path, repo: &RepoRef, id: &WorkspaceId, configs: &[String]) -> CmdResult {
-    let entry = repostore::lookup(home, repo)?;
-    let managers = settings::session_managers(home);
-    let manager = settings::session_manager(home, &managers)?;
-    let paths = paths(home);
+pub fn open(settings: &Settings, repo: &RepoRef, id: &WorkspaceId, configs: &[String]) -> CmdResult {
+    let entry = repostore::lookup(settings, repo)?;
+    let managers = settings.session_managers();
+    let manager = settings.session_manager(&managers)?;
+    let paths = paths(settings);
     let workspace = domain::workspace_path(&paths, &entry, id);
 
     // 依存の順序: worktree (Issue のみ) → session → devcontainer
@@ -341,19 +343,19 @@ pub fn open(home: &Path, repo: &RepoRef, id: &WorkspaceId, configs: &[String]) -
     }
     let session = session::ensure(manager, repo, id, &workspace, &entry.clone_path, &managers)?;
 
-    let shell = settings::devcontainer_shell(home);
+    let shell = settings.devcontainer_shell();
     let outcomes = configs
         .iter()
         .map(|cfg| {
             let config_path = Path::new(cfg);
             let cname = devcontainer::config_name(&workspace, config_path);
             let outcome =
-                devcontainer::up(home, &entry.clone_path, repo, id, &workspace, config_path, &cname)
+                devcontainer::up(settings.home(), &entry.clone_path, repo, id, &workspace, config_path, &cname)
                     .map_err(|_| format!("devcontainer up failed for {cfg}"))?;
             // 配線: DevContainer が exec コマンドを組み立て、SessionManager が
             // 🐳 ウィンドウを追加する (dedup キーはコンテナ ID)
             if let Some((cid, command)) =
-                devcontainer::exec_command(repo, id, &cname, home, &workspace, &shell)
+                devcontainer::exec_command(repo, id, &cname, settings.home(), &workspace, &shell)
             {
                 session::add_window(manager, &session, "🐳", &command, &cid, &managers);
             }
@@ -382,9 +384,9 @@ pub fn open(home: &Path, repo: &RepoRef, id: &WorkspaceId, configs: &[String]) -
     }))
 }
 
-pub fn remove(home: &Path, repo: &RepoRef, id: &WorkspaceId) -> CmdResult {
-    let paths = paths(home);
-    let managers = settings::session_managers(home);
+pub fn remove(settings: &Settings, repo: &RepoRef, id: &WorkspaceId) -> CmdResult {
+    let paths = paths(settings);
+    let managers = settings.session_managers();
 
     // herdr のセッションは Issue workspace の器なので、残存中は main を消せない
     if *id == WorkspaceId::Main && session::herdr_blocks_main_removal(repo, &managers) {
@@ -406,7 +408,7 @@ pub fn remove(home: &Path, repo: &RepoRef, id: &WorkspaceId) -> CmdResult {
             "message": format!("Removed session: {}", repo.ns_repo()),
         })),
         WorkspaceId::Issue(issue) => {
-            if let Ok(entry) = repostore::lookup(home, repo) {
+            if let Ok(entry) = repostore::lookup(settings, repo) {
                 worktree::remove(&entry.clone_path, &domain::workspace_path(&paths, &entry, id));
             }
             // トラッカー固有の記法 (# 等) は使わない: <ns_repo> <id> のスペース区切り

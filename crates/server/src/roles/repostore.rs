@@ -6,7 +6,8 @@
 //! ns/repo は全ソース・全 host を横断して一意であることを規約とし、
 //! 重複はエラーにする。出力の形が不正な行は捨てる。
 
-use crate::infra::{exec, settings};
+use crate::infra::exec;
+use crate::infra::settings::Settings;
 use std::path::{Path, PathBuf};
 use wsm_shared::domains::{self as domain, RepoEntry, RepoRef};
 
@@ -20,18 +21,18 @@ pub fn root(home: &Path) -> PathBuf {
 }
 
 /// ストアの全エントリ (ghq の出力順 → 設定 `[[repo]]` の記述順)。
-pub fn entries(home: &Path) -> Result<Vec<RepoEntry>, String> {
-    let mut entries = ghq_entries(&root(home));
-    entries.extend(settings::custom_repos(home)?);
+pub fn entries(settings: &Settings) -> Result<Vec<RepoEntry>, String> {
+    let mut entries = ghq_entries(&root(settings.home()));
+    entries.extend(settings.custom_repos()?);
     Ok(entries)
 }
 
 /// 識別子 `<ns>/<repo>` からエントリを探す。Ok(None) = 未登録 (Issue の照会は
 /// ローカルクローンなしでも成立するため、呼び出し側が扱いを決める)。
 /// 複数の host にまたがる重複と設定の誤りはエラー (識別子の一意性が規約)。
-pub fn find(home: &Path, repo: &RepoRef) -> Result<Option<RepoEntry>, String> {
+pub fn find(settings: &Settings, repo: &RepoRef) -> Result<Option<RepoEntry>, String> {
     let mut matches: Vec<RepoEntry> =
-        entries(home)?.into_iter().filter(|entry| entry.repo == *repo).collect();
+        entries(settings)?.into_iter().filter(|entry| entry.repo == *repo).collect();
     match matches.len() {
         0 => Ok(None),
         1 => Ok(Some(matches.remove(0))),
@@ -44,8 +45,8 @@ pub fn find(home: &Path, repo: &RepoRef) -> Result<Option<RepoEntry>, String> {
 }
 
 /// find() の必須版 (open など、クローンの実体が要る操作に使う)。
-pub fn lookup(home: &Path, repo: &RepoRef) -> Result<RepoEntry, String> {
-    find(home, repo)?.ok_or_else(|| format!("repository not found: {}", repo.ns_repo()))
+pub fn lookup(settings: &Settings, repo: &RepoRef) -> Result<RepoEntry, String> {
+    find(settings, repo)?.ok_or_else(|| format!("repository not found: {}", repo.ns_repo()))
 }
 
 fn ghq_entries(root: &Path) -> Vec<RepoEntry> {
