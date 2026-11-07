@@ -2518,3 +2518,182 @@ fn open_fails_with_single_error_json_when_worktree_add_fails() {
     assert_eq!(out.stdout, "");
     assert_eq!(out.stderr_json(), json!({ "error": "Failed to create worktree" }));
 }
+
+// --- 設定ファイルの解析 (TOML) ---
+// 設定は TOML として解析する。書式の誤りや型の誤りは黙って読み飛ばさず、
+// 位置付きの error JSON で表面化させる (手書きの設定で typo に気づけるように)。
+
+#[test]
+fn malformed_config_toml_is_an_error() {
+    // Arrange: 閉じ引用符のない行 (旧実装では黙って無視され「未設定」に見えていた)
+    let env = TestEnv::new();
+    env.write_home(".config/wsm/config.toml", "tmux_path = \"/opt/homebrew/bin/tmux\n");
+
+    // Act
+    let out = env.run(&["list-session-managers"]);
+
+    // Assert: ファイルのパスと位置 (行・桁) を含む 1 行のエラー
+    assert_eq!(out.status, Some(1));
+    let message = out.stderr_json()["error"].as_str().unwrap().to_owned();
+    let config_path = env.home().join(".config/wsm/config.toml");
+    let prefix = format!("{}: TOML parse error at line 1, column 36: ", config_path.display());
+    assert!(message.starts_with(&prefix), "{message}");
+    assert!(message.contains("invalid basic string"), "{message}");
+    assert!(!message.contains('\n'), "{message}");
+}
+
+#[test]
+fn top_level_key_after_table_belongs_to_the_table() {
+    // Arrange: [[tracker]] の後ろに書いたトップレベル風のキーは、TOML の意味論どおり
+    // その tracker のキー (config.toml.example の注記。行パーサ時代と同じ挙動の固定)。
+    // 既定マネージャーには効かず、tracker の拡張キーとしてプラグインに渡る
+    let env = TestEnv::new();
+    let config = format!(
+        "{}{}default_session_manager = \"herdr\"\n",
+        env.managers_config(&["tmux", "herdr"]),
+        env.tracker_config()
+    );
+    env.write_home(".config/wsm/config.toml", &config).stub(
+        "^WSM_TRACKER_DEFAULT_SESSION_MANAGER=herdr tracker list-repo-groups-v0$",
+        r#"[{"id":"1","title":"Board"}]"#,
+    );
+
+    // Act
+    let managers = env.run(&["list-session-managers"]);
+    let groups = env.run(&["list-repo-groups"]);
+
+    // Assert
+    assert_eq!(
+        managers.stdout_json(),
+        json!([{ "name": "tmux", "default": true }, { "name": "herdr", "default": false }])
+    );
+    assert_eq!(groups.stdout_json(), json!([{ "id": "1", "title": "Board", "tracker": "fake" }]));
+}
+
+#[test]
+fn non_string_tracker_value_is_a_config_error() {
+    // Arrange: 拡張キーに数値。環境変数への写し方を wsm が決めないため、文字列以外は設定誤り
+    let env = TestEnv::new();
+    let config = format!(
+        "{}{}groups = 12\n",
+        env.managers_config(&["tmux", "herdr"]),
+        env.tracker_config()
+    );
+    env.write_home(".config/wsm/config.toml", &config);
+
+    // Act
+    let out = env.run(&["list-repo-groups"]);
+
+    // Assert
+    assert_eq!(out.status, Some(1));
+    assert_eq!(
+        out.stderr_json(),
+        json!({ "error": "[[tracker]] groups must be a string in config.toml" })
+    );
+}
+
+#[test]
+fn duplicate_key_is_a_toml_error() {
+    // Arrange: 同じブロック内で name を 2 回 (行パーサ時代は黙って後勝ちだった)。
+    // マネージャー 2 行 + [[tracker]] 3 行の次なので、2 回目の name は 6 行目
+    let env = TestEnv::new();
+    let config = format!(
+        "{}{}name = \"again\"\n",
+        env.managers_config(&["tmux", "herdr"]),
+        env.tracker_config()
+    );
+    env.write_home(".config/wsm/config.toml", &config);
+
+    // Act
+    let out = env.run(&["list-session-managers"]);
+
+    // Assert: TOML として壊れている扱い (2 回目の name の位置を指す)
+    assert_eq!(out.status, Some(1));
+    let config_path = env.home().join(".config/wsm/config.toml");
+    let message = format!("{}: TOML parse error at line 6, column 1: duplicate key", config_path.display());
+    assert_eq!(out.stderr_json(), json!({ "error": message }));
+}
+
+#[test]
+fn non_snake_case_tracker_key_is_a_config_error() {
+    // Arrange: 環境変数名に写せないキー (行パーサ時代は黙って捨てられ、プラグインに届かなかった)
+    let env = TestEnv::new();
+    let config = format!(
+        "{}{}Owner = \"acme-corp\"\n",
+        env.managers_config(&["tmux", "herdr"]),
+        env.tracker_config()
+    );
+    env.write_home(".config/wsm/config.toml", &config);
+
+    // Act
+    let out = env.run(&["list-repo-groups"]);
+
+    // Assert
+    assert_eq!(out.status, Some(1));
+    assert_eq!(
+        out.stderr_json(),
+        json!({ "error": "Invalid key in [[tracker]]: Owner in config.toml" })
+    );
+}
+
+#[test]
+fn single_tracker_table_is_a_config_error() {
+    // Arrange: [[tracker]] (配列のテーブル) のつもりで [tracker] (単一テーブル) と書いた
+    let env = TestEnv::new();
+    let config = format!(
+        "{}[tracker]\nname = \"fake\"\npath = \"{}/tracker\"\n",
+        env.managers_config(&["tmux", "herdr"]),
+        env.fakes_dir_str()
+    );
+    env.write_home(".config/wsm/config.toml", &config);
+
+    // Act
+    let out = env.run(&["list-session-managers"]);
+
+    // Assert
+    assert_eq!(out.status, Some(1));
+    assert_eq!(
+        out.stderr_json(),
+        json!({ "error": "[[tracker]] must be an array of tables in config.toml" })
+    );
+}
+
+#[test]
+fn non_string_top_level_value_is_a_config_error() {
+    // Arrange: トップレベルの値に数値 (行パーサ時代は黙って読み飛ばされ、既定値に見えていた)
+    let env = TestEnv::new();
+    let config = format!("{}worktree_root = 1\n", env.managers_config(&["tmux", "herdr"]));
+    env.write_home(".config/wsm/config.toml", &config);
+
+    // Act
+    let out = env.run(&["list-session-managers"]);
+
+    // Assert
+    assert_eq!(out.status, Some(1));
+    assert_eq!(
+        out.stderr_json(),
+        json!({ "error": "worktree_root must be a string in config.toml" })
+    );
+}
+
+#[test]
+fn unknown_array_table_is_a_config_error() {
+    // Arrange: [[tracker]] のつもりで [[Tracker]] と書いた (行パーサ時代は黙って読み飛ばされた)
+    let env = TestEnv::new();
+    let config = format!(
+        "{}[[Tracker]]\nname = \"fake\"\npath = \"{}/tracker\"\n",
+        env.managers_config(&["tmux", "herdr"]),
+        env.fakes_dir_str()
+    );
+    env.write_home(".config/wsm/config.toml", &config);
+
+    // Act
+    let out = env.run(&["list-session-managers"]);
+
+    // Assert: 「文字列にせよ」ではなく「知らないテーブル」として報告する
+    assert_eq!(out.status, Some(1));
+    assert_eq!(
+        out.stderr_json(),
+        json!({ "error": "[[Tracker]] is not a known table in config.toml" })
+    );
+}

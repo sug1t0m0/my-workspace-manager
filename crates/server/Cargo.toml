@@ -7,6 +7,11 @@ license.workspace = true
 
 [dependencies]
 serde_json = "1"
+# 設定ファイル (config.toml) の解析。値の取り出しは toml::Table を直接歩く
+# (serde derive は使わない。`serde` フィーチャは Table / Value 型の提供に要る)。
+# preserve_order は tmux_path / herdr_path の出現順 (= 選択 UI の並び順) を
+# 保つために必須。
+toml = { version = "0.9", default-features = false, features = ["parse", "preserve_order", "serde"] }
 wsm-shared = { path = "../shared" }
 
 [dev-dependencies]

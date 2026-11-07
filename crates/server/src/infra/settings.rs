@@ -1,6 +1,9 @@
-//! Settings: config.toml (トップレベルの `key = "value"` と `[[tracker]]` /
-//! `[[repo]]` テーブルのサブセットのみ対応) と環境変数オーバーライド。
+//! Settings: config.toml と環境変数オーバーライド。
 //! 優先順位: 環境変数 > 設定ファイル > 組み込み既定値。
+//!
+//! 設定ファイルは TOML として解析し (toml crate)、使うのはトップレベルの
+//! 文字列値と `[[tracker]]` / `[[repo]]` テーブル。値はすべて文字列で、
+//! それ以外の型は設定誤りとしてエラーにする (黙って捨てない)。
 //!
 //! 読み込みはコマンドの入口で 1 回 (`Settings::load`)。ファイルの内容は
 //! 解析済みの `Document` として持ち、以降の問い合わせはファイルに触らない。
@@ -164,10 +167,14 @@ impl Trackers {
     }
 }
 
-/// `key = "value"` の対の列 (テーブル 1 ブロック分、またはトップレベル全体)。
-type Pairs = Vec<(String, String)>;
+/// `key = "value"` の 1 対。
+type Pair = (String, String);
 
-/// 設定ファイル 1 つの解析結果。トップレベルの `key = "value"` (出現順) と、
+/// 対の列 (テーブル 1 ブロック分、またはトップレベル全体)。
+/// ファイルの記述順を保つ (tmux_path / herdr_path の出現順が選択 UI の並び順)。
+type Pairs = Vec<Pair>;
+
+/// 設定ファイル 1 つの解析結果。トップレベルの文字列値 (記述順) と、
 /// `[[tracker]]` / `[[repo]]` の各ブロック (記述順)。それ以外のテーブルは
 /// 読み飛ばす。
 struct Document {
@@ -177,75 +184,125 @@ struct Document {
     repos: Vec<Pairs>,
 }
 
-/// 解析中に「今どのテーブルの中か」を表す。
-enum Table {
-    Tracker,
-    Repo,
-    Other,
-}
-
-impl Table {
-    fn from_header(line: &str) -> Self {
-        match line {
-            "[[tracker]]" => Self::Tracker,
-            "[[repo]]" => Self::Repo,
-            _ => Self::Other,
-        }
-    }
-}
-
 impl Document {
-    /// ファイルを読んで解析する。無ければ空 (設定なし) として扱い、
-    /// 存在するのに読めないのはエラー。
-    fn read(path: &Path) -> Result<Self, String> {
-        let content = match std::fs::read_to_string(path) {
-            Ok(content) => content,
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
-            Err(e) => return Err(format!("{}: {e}", path.display())),
-        };
-        Ok(Self::parse(path, &content))
-    }
-
-    /// 行単位の解析。`[` で始まる行はテーブルの区切りで、`[[tracker]]` /
-    /// `[[repo]]` のブロックだけを集める。テーブルの外の `key = "value"` が
-    /// トップレベル値。
-    fn parse(source: &Path, content: &str) -> Self {
-        let mut doc = Self {
+    /// 設定なし (ファイルが無い) を表す空の文書。
+    fn empty(source: &Path) -> Self {
+        Self {
             source: source.to_owned(),
             scalars: Vec::new(),
             trackers: Vec::new(),
             repos: Vec::new(),
-        };
-        let mut current: Option<(Table, Pairs)> = None;
-        for line in content.lines() {
-            let trimmed = line.trim();
-            if trimmed.starts_with('[') {
-                doc.close(current.take());
-                current = Some((Table::from_header(trimmed), Vec::new()));
-            } else if let Some(pair) = parse_table_line(trimmed) {
-                match current.as_mut() {
-                    Some((_, pairs)) => pairs.push(pair),
-                    None => doc.scalars.push(pair),
+        }
+    }
+
+    /// ファイルを読んで解析する。無ければ空 (設定なし) として扱い、
+    /// 存在するのに読めない・TOML として壊れているのはエラー。
+    fn read(path: &Path) -> Result<Self, String> {
+        match std::fs::read_to_string(path) {
+            Ok(content) => Self::parse(path, &content),
+            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(Self::empty(path)),
+            Err(e) => Err(format!("{}: {e}", path.display())),
+        }
+    }
+
+    /// TOML として解析し、使う部分だけを取り出す。`tracker` / `repo` は配列の
+    /// テーブル、それ以外のテーブルは読み飛ばし、残るトップレベルの値は
+    /// すべて文字列であること。他の配列 (`[[Tracker]]` のような typo) と
+    /// 数値・真偽値は設定誤り。
+    fn parse(source: &Path, content: &str) -> Result<Self, String> {
+        let mut table: toml::Table =
+            content.parse().map_err(|e| parse_error(source, content, &e))?;
+        let file = file_name_of(source);
+        let trackers = table_blocks(table.remove("tracker"), "tracker", &file)?;
+        let repos = table_blocks(table.remove("repo"), "repo", &file)?;
+        let scalars = table
+            .into_iter()
+            .filter_map(|(key, value)| match value {
+                toml::Value::String(s) => Some(Ok((key, s))),
+                toml::Value::Table(_) => None,
+                toml::Value::Array(_) => {
+                    Some(Err(format!("[[{key}]] is not a known table in {file}")))
                 }
-            }
-        }
-        doc.close(current.take());
-        doc
+                _ => Some(Err(format!("{key} must be a string in {file}"))),
+            })
+            .collect::<Result<Pairs, String>>()?;
+        Ok(Self { source: source.to_owned(), scalars, trackers, repos })
     }
 
-    /// 読み終えたテーブルを種類ごとの列に収める。
-    fn close(&mut self, section: Option<(Table, Pairs)>) {
-        match section {
-            Some((Table::Tracker, pairs)) => self.trackers.push(pairs),
-            Some((Table::Repo, pairs)) => self.repos.push(pairs),
-            Some((Table::Other, _)) | None => {}
-        }
-    }
-
-    /// トップレベルの文字列キー。最初の一致のみ。
+    /// トップレベルの文字列キー (TOML は同名キーを許さないので一意)。
     fn scalar(&self, key: &str) -> Option<&str> {
         self.scalars.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str())
     }
+}
+
+/// TOML の解析エラーを 1 行にする:
+/// `<path>: TOML parse error at line N, column M: <message>`。
+/// toml crate の Display は該当行の抜き出しを含む複数行で、error JSON の値には
+/// 向かないため組み直す。
+fn parse_error(source: &Path, content: &str, error: &toml::de::Error) -> String {
+    let path = source.display();
+    let message = error.message();
+    match error.span().map(|span| line_column(content, span.start)) {
+        Some((line, column)) => {
+            format!("{path}: TOML parse error at line {line}, column {column}: {message}")
+        }
+        None => format!("{path}: TOML parse error: {message}"),
+    }
+}
+
+/// バイトオフセットから 1 始まりの (行, 桁) を求める。桁は文字数で数える
+/// (toml crate 自身の表示と同じ数え方)。toml の span はトークン境界を指すので
+/// 文字境界に乗らないことはないが、乗らない・範囲外のときは末尾として扱う。
+fn line_column(content: &str, offset: usize) -> (usize, usize) {
+    let before = content.get(..offset).unwrap_or(content);
+    let line = before.matches('\n').count() + 1;
+    let column = before.rsplit('\n').next().map_or(0, |last| last.chars().count()) + 1;
+    (line, column)
+}
+
+/// `[[<header>]]` の各ブロックを (key, value) の対の列に写す。配列のテーブル
+/// 以外の形 (単一テーブルや文字列) は設定誤り。
+fn table_blocks(
+    value: Option<toml::Value>,
+    header: &str,
+    file: &str,
+) -> Result<Vec<Pairs>, String> {
+    let not_array_of_tables = || format!("[[{header}]] must be an array of tables in {file}");
+    let blocks = match value {
+        None => return Ok(Vec::new()),
+        Some(toml::Value::Array(blocks)) => blocks,
+        Some(_) => return Err(not_array_of_tables()),
+    };
+    blocks
+        .into_iter()
+        .map(|block| match block {
+            toml::Value::Table(section) => section
+                .into_iter()
+                .map(|(key, value)| block_pair(header, file, key, value))
+                .collect(),
+            _ => Err(not_array_of_tables()),
+        })
+        .collect()
+}
+
+/// ブロック内の 1 項目。キーの形と値の型 (文字列のみ) を検証する。
+fn block_pair(header: &str, file: &str, key: String, value: toml::Value) -> Result<Pair, String> {
+    if !is_valid_key(&key) {
+        return Err(format!("Invalid key in [[{header}]]: {key} in {file}"));
+    }
+    match value {
+        toml::Value::String(s) => Ok((key, s)),
+        _ => Err(format!("[[{header}]] {key} must be a string in {file}")),
+    }
+}
+
+/// ブロック内で使えるキー: 英小文字始まりの英小文字・数字・`_` のみ。
+/// tracker ではそのまま環境変数名 (`WSM_TRACKER_<KEY大文字>`) に写す。repo の
+/// 予約キーも同じ字種なので両方に適用し、`Name` のような typo を表面化させる。
+fn is_valid_key(key: &str) -> bool {
+    let mut chars = key.chars();
+    chars.next().is_some_and(|c| c.is_ascii_lowercase())
+        && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_')
 }
 
 /// 読み込み済みのマシン設定。コマンドの入口で 1 回作り、各ユースケースに渡す。
@@ -459,41 +516,22 @@ fn tracker_entry(home: &Path, source: &Path, section: &Pairs) -> Result<Tracker,
             .collect::<Result<Vec<_>, String>>()?,
     };
 
-    // 予約キー以外はプラグインへの環境変数 (同名キーの重複は後勝ち)
-    let mut env: Vec<(String, String)> = vec![("WSM_TRACKER_NAME".to_owned(), name.clone())];
-    for (key, value) in section {
-        if matches!(key.as_str(), "name" | "path" | "ns") {
-            continue;
-        }
-        let var = format!("WSM_TRACKER_{}", key.to_uppercase());
-        match env.iter_mut().find(|(existing, _)| existing == &var) {
-            Some((_, existing)) => *existing = value.clone(),
-            None => env.push((var, value.clone())),
-        }
-    }
+    // 予約キー以外はプラグインへの環境変数 (キーは一意なので衝突しない)
+    let env = std::iter::once(("WSM_TRACKER_NAME".to_owned(), name.clone()))
+        .chain(
+            section
+                .iter()
+                .filter(|(key, _)| !matches!(key.as_str(), "name" | "path" | "ns"))
+                .map(|(key, value)| (format!("WSM_TRACKER_{}", key.to_uppercase()), value.clone())),
+        )
+        .collect();
 
     Ok(Tracker { name, path: expand_tilde(home, &path), ns, env })
 }
 
-/// `key = "value"` (前後の空白と行末コメントを許容) を対に分解する。
-/// キーは英小文字始まりの英小文字・数字・`_` のみ (環境変数名に安全に
-/// 写せる形)。それ以外の行 (コメント・空行・形の違う行) は None。
-fn parse_table_line(line: &str) -> Option<(String, String)> {
-    let (key, rest) = line.split_once('=')?;
-    let key = key.trim();
-    let mut chars = key.chars();
-    let valid_key = chars.next().is_some_and(|c| c.is_ascii_lowercase())
-        && chars.all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_');
-    if !valid_key {
-        return None;
-    }
-    let rest = rest.trim_start().strip_prefix('"')?;
-    rest.split_once('"').map(|(value, _)| (key.to_owned(), value.to_owned()))
-}
-
-/// テーブル内のキーの値 (同名キーの重複は後勝ち)。
+/// テーブル内のキーの値 (TOML は同名キーを許さないので一意)。
 fn table_value(section: &Pairs, key: &str) -> Option<String> {
-    section.iter().rev().find(|(k, _)| k == key).map(|(_, v)| v.clone())
+    section.iter().find(|(k, _)| k == key).map(|(_, v)| v.clone())
 }
 
 fn env_override(name: &str) -> Option<String> {
