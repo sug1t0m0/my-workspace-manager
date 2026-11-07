@@ -2697,3 +2697,335 @@ fn unknown_array_table_is_a_config_error() {
         json!({ "error": "[[Tracker]] is not a known table in config.toml" })
     );
 }
+
+// --- config.local.toml (overlay) ---
+// config.toml と同じディレクトリの config.local.toml を追加で読む。無ければ無視。
+// トップレベル値は overlay が後勝ち、[[tracker]] / [[repo]] は連結 (同名 tracker はエラー)。
+// 優先順位: 環境変数 > config.local.toml > config.toml > 組み込み既定値。
+// tmux_path / herdr_path の並びは config.toml の出現順が骨格。空文字のパスは未設定扱い
+// なので、overlay で base のマネージャーを外せる。
+
+#[test]
+fn overlay_scalar_overrides_base() {
+    // Arrange: 既定マネージャーを config.toml は tmux、overlay は herdr と書く
+    let env = TestEnv::new();
+    env.write_home(
+        ".config/wsm/config.toml",
+        &format!("{}default_session_manager = \"tmux\"\n", env.managers_config(&["tmux", "herdr"])),
+    )
+    .write_home(".config/wsm/config.local.toml", "default_session_manager = \"herdr\"\n");
+
+    // Act
+    let out = env.run(&["list-session-managers"]);
+
+    // Assert: overlay の値が勝つ
+    assert_eq!(
+        out.stdout_json(),
+        json!([{ "name": "tmux", "default": false }, { "name": "herdr", "default": true }])
+    );
+}
+
+#[test]
+fn overlay_trackers_are_appended_to_base() {
+    // Arrange: config.toml に fake、overlay に other。両方に照会が行く
+    let env = TestEnv::new();
+    env.write_home(
+        ".config/wsm/config.local.toml",
+        &format!("[[tracker]]\nname = \"other\"\npath = \"{}/tracker2\"\n", env.fakes_dir_str()),
+    )
+    .stub("^tracker list-repo-groups-v0$", r#"[{"id":"1","title":"Personal"}]"#)
+    .stub("^tracker2 list-repo-groups-v0$", r#"[{"id":"2","title":"Org"}]"#);
+
+    // Act
+    let out = env.run(&["list-repo-groups"]);
+
+    // Assert: 既定 (config.toml の先頭) が先、overlay のものが後
+    assert_eq!(out.status, Some(0));
+    assert_eq!(
+        out.stdout_json(),
+        json!([
+            { "id": "1", "title": "Personal", "tracker": "fake" },
+            { "id": "2", "title": "Org", "tracker": "other" },
+        ])
+    );
+}
+
+#[test]
+fn same_tracker_name_in_both_files_is_a_config_error() {
+    // Arrange: config.toml の fake と同名の tracker を overlay にも書く
+    let env = TestEnv::new();
+    env.write_home(".config/wsm/config.local.toml", &env.tracker_config());
+
+    // Act
+    let out = env.run(&["list-repo-groups"]);
+
+    // Assert: 黙って置き換えず、両方のファイル名を挙げて止まる
+    assert_eq!(out.status, Some(1));
+    assert_eq!(
+        out.stderr_json(),
+        json!({ "error": "tracker name duplicated: fake (config.toml, config.local.toml)" })
+    );
+}
+
+#[test]
+fn overlay_repos_are_appended_to_base() {
+    // Arrange: ghq 管理外のクローンを overlay の [[repo]] で登録する
+    let env = TestEnv::new();
+    env.write_home(
+        ".config/wsm/config.local.toml",
+        "[[repo]]\npath = \"~/work/aaa\"\nhost = \"gitlab.example.com\"\nns = \"myteam\"\n",
+    );
+
+    // Act
+    let out = env.run(&["list-repos", "--group", "none"]);
+
+    // Assert: ghq のリポジトリと一緒に並ぶ (ns_repo の辞書順)
+    assert_eq!(
+        out.stdout_json(),
+        json!([
+            { "ns_repo": "myteam/aaa", "active_count": 0 },
+            { "ns_repo": "owner/repo", "active_count": 0 },
+        ])
+    );
+}
+
+#[test]
+fn overlay_manager_path_replaces_value_but_keeps_order() {
+    // Arrange: config.toml の tmux_path は壊れたパス、overlay で正しいパスに差し替える。
+    // 並びは config.toml の順 (tmux, herdr) のまま
+    let env = TestEnv::new();
+    env.write_home(
+        ".config/wsm/config.toml",
+        &format!("tmux_path = \"/no/such/tmux\"\nherdr_path = \"{}/herdr\"\n", env.fakes_dir_str()),
+    )
+    .write_home(
+        ".config/wsm/config.local.toml",
+        &format!("tmux_path = \"{}/tmux\"\n", env.fakes_dir_str()),
+    )
+    .stub("^tmux has-session -t =owner_repo$", "");
+
+    // Act
+    let managers = env.run(&["list-session-managers"]);
+    let opened = env.run(&["open", "--repo", "owner/repo", "--issue", "main"]);
+
+    // Assert: 既定は tmux のまま、open は overlay のパス (フェイク) で成功する
+    assert_eq!(
+        managers.stdout_json(),
+        json!([{ "name": "tmux", "default": true }, { "name": "herdr", "default": false }])
+    );
+    assert_eq!(opened.status, Some(0), "{}", opened.stderr);
+    assert_eq!(opened.stdout_json()["status"], json!("ok"));
+}
+
+#[test]
+fn overlay_only_manager_is_appended_last() {
+    // Arrange: config.toml は tmux だけ、overlay に herdr を足す
+    let env = TestEnv::new();
+    env.write_home(".config/wsm/config.toml", &env.managers_config(&["tmux"]))
+        .write_home(".config/wsm/config.local.toml", &env.managers_config(&["herdr"]));
+
+    // Act
+    let out = env.run(&["list-session-managers"]);
+
+    // Assert: config.local.toml にだけ書かれたキーは末尾
+    assert_eq!(
+        out.stdout_json(),
+        json!([{ "name": "tmux", "default": true }, { "name": "herdr", "default": false }])
+    );
+}
+
+#[test]
+fn overlay_alone_is_enough() {
+    // Arrange: config.toml が無く、config.local.toml だけがある
+    let env = TestEnv::new();
+    std::fs::remove_file(env.home().join(".config/wsm/config.toml")).unwrap();
+    env.write_home(".config/wsm/config.local.toml", &env.managers_config(&["herdr", "tmux"]));
+
+    // Act
+    let out = env.run(&["list-session-managers"]);
+
+    // Assert: 2 ファイルは対称に「無ければ空」で、overlay だけでも動く
+    assert_eq!(out.status, Some(0));
+    assert_eq!(
+        out.stdout_json(),
+        json!([{ "name": "herdr", "default": true }, { "name": "tmux", "default": false }])
+    );
+}
+
+#[test]
+fn invalid_block_in_overlay_names_the_overlay_file() {
+    // Arrange: overlay の [[repo]] に必須キー ns が無い
+    let env = TestEnv::new();
+    env.write_home(
+        ".config/wsm/config.local.toml",
+        "[[repo]]\npath = \"~/work/aaa\"\nhost = \"gitlab.example.com\"\n",
+    );
+
+    // Act
+    let out = env.run(&["list-repos", "--group", "none"]);
+
+    // Assert: 実際に書かれていたファイル名で報告する (config.toml を見に行かせない)
+    assert_eq!(out.status, Some(1));
+    assert_eq!(out.stderr_json(), json!({ "error": "[[repo]] requires ns in config.local.toml" }));
+}
+
+#[test]
+fn malformed_overlay_names_the_overlay_path() {
+    // Arrange: overlay が TOML として壊れている
+    let env = TestEnv::new();
+    env.write_home(".config/wsm/config.local.toml", "default_tracker = fake\n");
+
+    // Act
+    let out = env.run(&["list-session-managers"]);
+
+    // Assert
+    assert_eq!(out.status, Some(1));
+    let message = out.stderr_json()["error"].as_str().unwrap().to_owned();
+    let overlay_path = env.home().join(".config/wsm/config.local.toml");
+    let prefix = format!("{}: TOML parse error at line 1, column 19: ", overlay_path.display());
+    assert!(message.starts_with(&prefix), "{message}");
+}
+
+#[test]
+fn same_tracker_name_twice_in_one_file_is_a_config_error() {
+    // Arrange: config.toml の中で同じ name を 2 回 (旧実装は黙って先勝ちだった)
+    let env = TestEnv::new();
+    let config = format!(
+        "{}{}{}",
+        env.managers_config(&["tmux", "herdr"]),
+        env.tracker_config(),
+        env.tracker_config()
+    );
+    env.write_home(".config/wsm/config.toml", &config);
+
+    // Act
+    let out = env.run(&["list-repo-groups"]);
+
+    // Assert: tracker 名は 1 ファイル内でも全体で一意
+    assert_eq!(out.status, Some(1));
+    assert_eq!(
+        out.stderr_json(),
+        json!({ "error": "tracker name duplicated: fake (config.toml, config.toml)" })
+    );
+}
+
+#[test]
+fn missing_both_config_files_is_not_a_load_error() {
+    // Arrange: config.toml も config.local.toml も無い
+    let env = TestEnv::new();
+    std::fs::remove_file(env.home().join(".config/wsm/config.toml")).unwrap();
+
+    // Act
+    let managers = env.run(&["list-session-managers"]);
+    let trackers = env.run(&["list-trackers"]);
+
+    // Assert: 読み込み時にはエラーにせず「空の設定」として動く
+    //         (未設定の検出は機能ごとのエラー・診断に任せる)
+    assert_eq!(managers.status, Some(0));
+    assert_eq!(managers.stdout_json(), json!([]));
+    assert_eq!(trackers.status, Some(0));
+    assert_eq!(trackers.stdout_json(), json!([]));
+}
+
+#[test]
+fn repos_from_both_files_are_concatenated() {
+    // Arrange: config.toml と overlay の両方に [[repo]]
+    let env = TestEnv::new();
+    env.write_home(
+        ".config/wsm/config.toml",
+        &format!(
+            "{}{}[[repo]]\npath = \"~/work/aaa\"\nhost = \"gitlab.example.com\"\nns = \"myteam\"\n",
+            env.managers_config(&["tmux", "herdr"]),
+            env.tracker_config()
+        ),
+    )
+    .write_home(
+        ".config/wsm/config.local.toml",
+        "[[repo]]\npath = \"~/work/bbb\"\nhost = \"gitlab.example.com\"\nns = \"myteam\"\n",
+    );
+
+    // Act
+    let out = env.run(&["list-repos", "--group", "none"]);
+
+    // Assert: ghq のものと合わせて 3 件 (ns_repo の辞書順)
+    assert_eq!(
+        out.stdout_json(),
+        json!([
+            { "ns_repo": "myteam/aaa", "active_count": 0 },
+            { "ns_repo": "myteam/bbb", "active_count": 0 },
+            { "ns_repo": "owner/repo", "active_count": 0 },
+        ])
+    );
+}
+
+#[test]
+fn same_repo_in_both_files_is_detected_at_lookup_not_at_load() {
+    // Arrange: 同じ ns/name のクローンを両ファイルに登録 (host だけ違う)
+    let env = TestEnv::new();
+    env.write_home(
+        ".config/wsm/config.toml",
+        &format!(
+            "{}{}[[repo]]\npath = \"~/work/aaa\"\nhost = \"gitlab.example.com\"\nns = \"myteam\"\n",
+            env.managers_config(&["tmux", "herdr"]),
+            env.tracker_config()
+        ),
+    )
+    .write_home(
+        ".config/wsm/config.local.toml",
+        "[[repo]]\npath = \"~/other/aaa\"\nhost = \"github.example.com\"\nns = \"myteam\"\n",
+    );
+
+    // Act
+    let listed = env.run(&["list-repos", "--group", "none"]);
+    let opened = env.run(&["open", "--repo", "myteam/aaa", "--issue", "main"]);
+
+    // Assert: 読み込みと一覧は通り (一覧は重複を隠さず 2 行出す。重複の警告は
+    //         doctor の設定検査拡充 = 別 Issue)、そのリポジトリを使う瞬間に RepoStore が止める
+    assert_eq!(
+        listed.stdout_json(),
+        json!([
+            { "ns_repo": "myteam/aaa", "active_count": 0 },
+            { "ns_repo": "myteam/aaa", "active_count": 0 },
+            { "ns_repo": "owner/repo", "active_count": 0 },
+        ])
+    );
+    assert_eq!(opened.status, Some(1));
+    assert_eq!(
+        opened.stderr_json(),
+        json!({ "error": "ambiguous repository: myteam/aaa (gitlab.example.com, github.example.com)" })
+    );
+}
+
+#[test]
+fn overlay_default_tracker_can_point_at_a_base_tracker() {
+    // Arrange: config.toml に fake と other、overlay で other を既定にする
+    let env = TestEnv::new();
+    env.write_home(".config/wsm/config.toml", &two_trackers_config(&env, ""))
+        .write_home(".config/wsm/config.local.toml", "default_tracker = \"other\"\n");
+
+    // Act
+    let out = env.run(&["list-trackers"]);
+
+    // Assert: 既定が other に入れ替わり、先頭に来る
+    let defaults: Vec<(String, bool)> = out
+        .stdout_json()
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|t| (t["name"].as_str().unwrap().to_owned(), t["default"].as_bool().unwrap()))
+        .collect();
+    assert_eq!(defaults, vec![("other".to_owned(), true), ("fake".to_owned(), false)]);
+}
+
+#[test]
+fn empty_path_in_overlay_disables_a_base_manager() {
+    // Arrange: config.toml の tmux を、overlay の空文字で「このマシンでは使わない」にする
+    let env = TestEnv::new();
+    env.write_home(".config/wsm/config.local.toml", "tmux_path = \"\"\n");
+
+    // Act
+    let out = env.run(&["list-session-managers"]);
+
+    // Assert: 空文字は未設定と同じ扱いなので、overlay で base のマネージャーを外せる
+    assert_eq!(out.stdout_json(), json!([{ "name": "herdr", "default": true }]));
+}
