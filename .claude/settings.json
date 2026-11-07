@@ -1,0 +1,35 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(cargo build *)",
+      "Bash(cargo check *)",
+      "Bash(cargo test *)",
+      "Bash(cargo clippy *)",
+      "Bash(cargo fmt *)",
+      "Bash(zsh -n *)",
+      "Bash(sh tests/*)"
+    ],
+    "ask": [
+      "Bash(gh issue comment *)",
+      "Bash(gh issue create *)",
+      "Bash(gh issue edit *)",
+      "Bash(gh issue close *)",
+      "Bash(gh pr create *)",
+      "Bash(gh pr merge *)",
+      "Bash(gh pr close *)",
+      "Bash(gh release *)",
+      "Bash(git push *)",
+      "Bash(git tag *)"
+    ]
+  },
+  "sandbox": {
+    "network": {
+      "allowLocalBinding": true,
+      "allowedDomains": [
+        "crates.io",
+        "index.crates.io",
+        "static.crates.io"
+      ]
+    }
+  }
+}
