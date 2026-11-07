@@ -4,7 +4,7 @@
 //! だけで、状態には触れない。パースが検証を兼ねる (RepoRef::parse /
 //! is_valid_issue) ため、usecase には正しい形の値しか渡らない。
 
-use crate::usecases::{self, CmdResult};
+use crate::usecases::{self, CmdResult, Settings};
 use std::path::PathBuf;
 use std::process::ExitCode;
 use wsm_shared::domains::{self as domain, RepoRef, WorkspaceId};
@@ -28,41 +28,42 @@ pub fn main() -> ExitCode {
 fn run(args: &[String]) -> CmdResult {
     let home = std::env::var("HOME").map(PathBuf::from).map_err(|_| "HOME is not set")?;
     let (subcmd, rest) = args.split_first().ok_or(USAGE)?;
+    let settings = Settings::load(&home)?;
     match subcmd.as_str() {
-        "list-repo-groups" => usecases::list_repo_groups(&home),
+        "list-repo-groups" => usecases::list_repo_groups(&settings),
         "list-group-issues" => {
             let group = required_group(rest)?;
-            usecases::list_group_issues(&home, &group, optional_tracker(rest)?, optional_cursor(rest)?)
+            usecases::list_group_issues(&settings, &group, optional_tracker(rest)?, optional_cursor(rest)?)
         }
         "list-repos" => usecases::list_repos(
-            &home,
+            &settings,
             flag_value(rest, "--group"),
             optional_tracker(rest)?,
             optional_repo(rest)?,
         ),
         "list-issues" => usecases::list_issues(
-            &home,
+            &settings,
             &required_repo(rest)?,
             optional_parent(rest)?,
             optional_cursor(rest)?,
         ),
-        "list-workspaces" => usecases::list_workspaces(&home),
-        "list-session-managers" => usecases::list_session_managers(&home),
-        "list-trackers" => usecases::list_trackers(&home),
+        "list-workspaces" => usecases::list_workspaces(&settings),
+        "list-session-managers" => usecases::list_session_managers(&settings),
+        "list-trackers" => usecases::list_trackers(&settings),
         "list-devcontainer-configs" => {
             let repo = required_repo(rest)?;
             let id = required_issue(rest)?;
-            usecases::list_devcontainer_configs(&home, &repo, &id)
+            usecases::list_devcontainer_configs(&settings, &repo, &id)
         }
         "open" => {
             let repo = required_repo(rest)?;
             let id = required_issue(rest)?;
-            usecases::open(&home, &repo, &id, &flag_values(rest, "--config"))
+            usecases::open(&settings, &repo, &id, &flag_values(rest, "--config"))
         }
         "remove" => {
             let repo = required_repo(rest)?;
             let id = required_issue(rest)?;
-            usecases::remove(&home, &repo, &id)
+            usecases::remove(&settings, &repo, &id)
         }
         _ => Err(USAGE.to_owned()),
     }
