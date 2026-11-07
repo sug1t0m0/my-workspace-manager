@@ -1,9 +1,16 @@
-//! Settings: config.toml と環境変数オーバーライド。
-//! 優先順位: 環境変数 > 設定ファイル > 組み込み既定値。
+//! Settings: config.toml + config.local.toml (overlay) と環境変数オーバーライド。
+//! 優先順位: 環境変数 > config.local.toml > config.toml > 組み込み既定値。
 //!
 //! 設定ファイルは TOML として解析し (toml crate)、使うのはトップレベルの
 //! 文字列値と `[[tracker]]` / `[[repo]]` テーブル。値はすべて文字列で、
 //! それ以外の型は設定誤りとしてエラーにする (黙って捨てない)。
+//!
+//! 2 ファイルの合成規則 (どちらも無ければ空として扱う):
+//! - トップレベル値は overlay が後勝ち
+//! - `[[tracker]]` / `[[repo]]` は連結 (config.toml → config.local.toml の順)。
+//!   同名の tracker は設定誤り (tracker 名は全体で一意)
+//! - tmux_path / herdr_path の並び順は config.toml の出現順を骨格にし、
+//!   同じキーは値だけ overlay に差し替え、overlay にだけあるキーは末尾
 //!
 //! 読み込みはコマンドの入口で 1 回 (`Settings::load`)。ファイルの内容は
 //! 解析済みの `Document` として持ち、以降の問い合わせはファイルに触らない。
@@ -45,8 +52,9 @@ impl SessionManager {
     }
 }
 
-/// 設定されたセッションマネージャーの列。config.toml の tmux_path /
-/// herdr_path の出現順 = 選択順で、先頭が既定。path が設定されていない
+/// 設定されたセッションマネージャーの列。設定ファイルの tmux_path /
+/// herdr_path の出現順 = 選択順で、先頭が既定 (2 ファイルの合成規則は
+/// `Settings::session_managers` を参照)。path が設定されていない
 /// マネージャーは存在しない扱い (選択不能・プローブや破棄の対象外)。
 pub struct Managers {
     entries: Vec<(SessionManager, PathBuf)>,
@@ -80,6 +88,8 @@ pub struct Tracker {
     path: PathBuf,
     ns: Vec<String>,
     env: Vec<(String, String)>,
+    /// このインスタンスが書かれていた設定ファイル。
+    source: PathBuf,
 }
 
 impl Tracker {
@@ -233,6 +243,16 @@ impl Document {
     fn scalar(&self, key: &str) -> Option<&str> {
         self.scalars.iter().find(|(k, _)| k == key).map(|(_, v)| v.as_str())
     }
+
+    /// `[[tracker]]` の各ブロックを、出どころのファイルと組にして記述順に返す。
+    fn tracker_blocks(&self) -> impl Iterator<Item = (&Path, &Pairs)> {
+        self.trackers.iter().map(|pairs| (self.source.as_path(), pairs))
+    }
+
+    /// `[[repo]]` の各ブロックを、出どころのファイルと組にして記述順に返す。
+    fn repo_blocks(&self) -> impl Iterator<Item = (&Path, &Pairs)> {
+        self.repos.iter().map(|pairs| (self.source.as_path(), pairs))
+    }
 }
 
 /// TOML の解析エラーを 1 行にする:
@@ -308,14 +328,24 @@ fn is_valid_key(key: &str) -> bool {
 /// 読み込み済みのマシン設定。コマンドの入口で 1 回作り、各ユースケースに渡す。
 pub struct Settings {
     home: PathBuf,
+    /// `config.toml`。想定する使い分けは dotfiles が生成する共通の値
+    /// (docs/wsm.md「dotfiles との境界」) だが、server は区別しない。
     base: Document,
+    /// `config.local.toml`。想定する使い分けは手書きのマシン・所属固有の値。
+    /// 無ければ空。
+    overlay: Document,
 }
 
 impl Settings {
-    /// `~/.config/wsm/config.toml` (`XDG_CONFIG_HOME` 準拠) を読む。
+    /// `~/.config/wsm/` (`XDG_CONFIG_HOME` 準拠) の config.toml と
+    /// config.local.toml を読む。どちらも無ければ空として扱う。
     pub fn load(home: &Path) -> Result<Self, String> {
-        let base = Document::read(&config_file(home))?;
-        Ok(Self { home: home.to_owned(), base })
+        let dir = config_dir(home);
+        Ok(Self {
+            home: home.to_owned(),
+            base: Document::read(&dir.join("config.toml"))?,
+            overlay: Document::read(&dir.join("config.local.toml"))?,
+        })
     }
 
     /// パス導出と RepoStore の基点になる HOME。
@@ -323,9 +353,9 @@ impl Settings {
         &self.home
     }
 
-    /// 設定ファイルのトップレベル値。
+    /// 設定ファイルのトップレベル値 (overlay が後勝ち)。
     fn scalar(&self, key: &str) -> Option<&str> {
-        self.base.scalar(key)
+        self.overlay.scalar(key).or_else(|| self.base.scalar(key))
     }
 
     /// 環境変数 > 設定ファイル、で文字列値を解決する。
@@ -333,15 +363,26 @@ impl Settings {
         env_override(env).or_else(|| self.scalar(key).map(str::to_owned))
     }
 
-    /// tmux_path / herdr_path を出現順に読む。空文字のパスは未設定と同じ扱い。
+    /// tmux_path / herdr_path を出現順に読む。並びは config.toml の出現順を
+    /// 骨格にし、overlay にだけあるキーを末尾に足す。値は overlay が後勝ち
+    /// (パスを差し替えても並びは変わらない)。空文字のパスは未設定と同じ扱い。
     pub fn session_managers(&self) -> Managers {
-        let entries = self
+        // マネージャーのキーの出現順 (base → overlay、初出のみ)
+        let managers_in_order = self
             .base
             .scalars
             .iter()
-            .filter_map(|(key, value)| {
-                SessionManager::from_path_key(key).map(|manager| (manager, value.as_str()))
-            })
+            .chain(&self.overlay.scalars)
+            .filter_map(|(key, _)| SessionManager::from_path_key(key).map(|m| (m, key.as_str())))
+            .fold(Vec::new(), |mut managers, entry| {
+                if !managers.contains(&entry) {
+                    managers.push(entry);
+                }
+                managers
+            });
+        let entries = managers_in_order
+            .into_iter()
+            .filter_map(|(manager, key)| Some((manager, self.scalar(key)?)))
             .filter(|(_, path)| !path.is_empty())
             .map(|(manager, path)| (manager, expand_tilde(&self.home, path)))
             .collect();
@@ -400,25 +441,42 @@ impl Settings {
     /// name = "aaa"                 # 識別子のリポジトリ名 (省略時 path の basename)
     /// tracker = "jira-team"        # 使うトラッカー名 (省略時 default_tracker)
     /// ```
+    ///
+    /// 2 ファイルの `[[repo]]` は連結する。ns/name の重複は RepoStore が
+    /// 検索時に検出する (ghq のリポジトリとの重複もそこでしか分からない)。
     pub fn custom_repos(&self) -> Result<Vec<RepoEntry>, String> {
-        let source = self.base.source.as_path();
-        self.base.repos.iter().map(|section| repo_entry(&self.home, source, section)).collect()
+        self.base
+            .repo_blocks()
+            .chain(self.overlay.repo_blocks())
+            .map(|(source, section)| repo_entry(&self.home, source, section))
+            .collect()
     }
 
-    /// [[tracker]] と default_tracker を読む。
+    /// [[tracker]] と default_tracker を読む。2 ファイルの `[[tracker]]` は
+    /// 連結し、tracker 名は全体で一意であること。
     pub fn trackers(&self) -> Result<Trackers, String> {
-        let source = self.base.source.as_path();
         let entries = self
             .base
-            .trackers
-            .iter()
-            .map(|section| tracker_entry(&self.home, source, section))
+            .tracker_blocks()
+            .chain(self.overlay.tracker_blocks())
+            .map(|(source, section)| tracker_entry(&self.home, source, section))
             .collect::<Result<Vec<Tracker>, String>>()?;
 
-        // ns の割り当ては一意であること (同じ ns を 2 つのトラッカーが主張したら
-        // どちらの世界か決められない)
         for (i, a) in entries.iter().enumerate() {
             for b in &entries[i + 1..] {
+                // tracker 名は全体で一意 (1 ファイル内でも 2 ファイル間でも)。
+                // 同名は「どちらの設定か」を決められない (overlay 優先で黙って
+                // 置き換えると、意図しない上書きに気づけない)
+                if a.name == b.name {
+                    return Err(format!(
+                        "tracker name duplicated: {} ({}, {})",
+                        a.name,
+                        file_name_of(&a.source),
+                        file_name_of(&b.source)
+                    ));
+                }
+                // ns の割り当ては一意であること (同じ ns を 2 つのトラッカーが
+                // 主張したらどちらの世界か決められない)
                 if let Some(ns) = a.ns.iter().find(|ns| b.ns.contains(ns)) {
                     return Err(format!(
                         "ns mapped to multiple trackers: {ns} ({}, {})",
@@ -526,7 +584,7 @@ fn tracker_entry(home: &Path, source: &Path, section: &Pairs) -> Result<Tracker,
         )
         .collect();
 
-    Ok(Tracker { name, path: expand_tilde(home, &path), ns, env })
+    Ok(Tracker { name, path: expand_tilde(home, &path), ns, env, source: source.to_owned() })
 }
 
 /// テーブル内のキーの値 (TOML は同名キーを許さないので一意)。
@@ -538,9 +596,10 @@ fn env_override(name: &str) -> Option<String> {
     std::env::var(name).ok().filter(|v| !v.is_empty())
 }
 
-fn config_file(home: &Path) -> PathBuf {
+/// 設定ファイルの置き場 `$XDG_CONFIG_HOME/wsm` (既定 `~/.config/wsm`)。
+fn config_dir(home: &Path) -> PathBuf {
     std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
         .unwrap_or_else(|| home.join(".config"))
-        .join("wsm/config.toml")
+        .join("wsm")
 }
