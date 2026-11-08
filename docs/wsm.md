@@ -867,8 +867,10 @@ daemon 停止など)でも「JSON なしの無言の失敗」はしない: 照�
 タグ `v*` の push で GitHub Actions が契約テストを通してからビルドし、
 成果物を Release に添付する (.github/workflows/release.yml)。
 
-- 成果物: `wsm-server-aarch64-apple-darwin`(Rust サーバー、macOS arm64
-  ホスト用)と `wsm`(zsh クライアント。ホスト・DevContainer 共通)
+- 成果物は 4 点: `wsm-server-aarch64-apple-darwin`(Rust サーバー、macOS arm64
+  ホスト用)、`wsm-tracker-github-aarch64-apple-darwin` と
+  `wsm-tracker-github-api-aarch64-apple-darwin`(公式 Tracker プラグイン)、
+  `wsm`(zsh クライアント。ホスト・DevContainer 共通)
 - dotfiles は chezmoi external で `releases/latest/download/<asset>` から
   取得する(`bin/` 直取りは廃止)
 - 将来 Rust クライアントを配るときは `wsm-client-<target>`(linux
@@ -1058,7 +1060,7 @@ wsm リポジトリと dotfiles の契約になる。
 
 | dotfiles に残るもの | 内容 |
 |---|---|
-| インストール導線 | `~/.local/bin/wsm-server`・`~/.local/bin/wsm-tracker-github`・`~/.local/bin/wsm` を chezmoi external で GitHub Releases (`releases/latest/download/<asset>`) から取得・配置する |
+| インストール導線 | `~/.local/bin/wsm-server`・`~/.local/bin/wsm-tracker-github`・`~/.local/bin/wsm-tracker-github-api`・`~/.local/bin/wsm` を chezmoi external で GitHub Releases (`releases/latest/download/<asset>`) から取得・配置する |
 | 設定ファイルの配置 (生成) | `~/.config/wsm/config.toml`: dotfiles (chezmoi) が生成する。マシン導出値 (`tmux_path` / `herdr_path`) と全マシン共通の値 (`default_session_manager`、個人用 `[[tracker]]`)。tracker はキーをループで転記せず TOML の文としてそのまま置く (生成器が wsm のスキーマを写し取らない) |
 | 設定ファイルの配置 (手書き) | `~/.config/wsm/config.local.toml`: chezmoi 管理外の手書き。マシン・所属固有の値 (組織用 `[[tracker]]`、`default_devcontainer_config`、`[[repo]]`、必要なら `default_tracker`)。生成から手書きへ値を移すときは、生成器側の出力を止めてから書く (同名 tracker が両方に存在する瞬間を作らない)。手順の詳細は dotfiles 側 |
 | SSH ホワイトリスト | `allowed-commands.sh` の `wsm-server` エントリ。wsm が必要とするのはこれのみ |
