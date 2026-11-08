@@ -28,7 +28,7 @@ fzf 選択と表示だけを担う。Tracker は外部コマンドのプラグ�
 - UI の回帰テスト: `sh tests/wsm_op_attached.sh`。構文確認: `zsh -n bin/wsm`
 - 開発中のサーバーを UI に掴ませる: `PATH="$PWD/target/debug:$PATH" wsm ...`
 - 配布はタグ `v*` の push → GitHub Actions が Release に添付 → dotfiles 側が配置する。
-  `~/.local/bin` のバイナリを手で上書きしない
+  手順は `/release` スキル (ユーザーが起動する)。`~/.local/bin` のバイナリを手で上書きしない
 
 ## 規約
 
