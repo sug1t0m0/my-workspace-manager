@@ -335,8 +335,9 @@ fn is_valid_key(key: &str) -> bool {
 /// 読み込み済みのマシン設定。コマンドの入口で 1 回作り、各ユースケースに渡す。
 pub struct Settings {
     home: PathBuf,
-    /// `config.toml`。想定する使い分けは dotfiles が生成する共通の値
-    /// (docs/wsm.md「dotfiles との境界」) だが、server は区別しない。
+    /// `config.toml`。想定する使い分けは dotfiles が生成・管理する値 (マシン
+    /// 導出値と全マシン共通の値。docs/wsm.md「dotfiles との境界」) だが、
+    /// server は区別しない。
     base: Document,
     /// `config.local.toml`。想定する使い分けは手書きのマシン・所属固有の値。
     /// 無ければ空。

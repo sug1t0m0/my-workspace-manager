@@ -27,18 +27,23 @@ crates/tracker-github      # 公式 GitHub プラグイン (gh CLI 版・階層�
 Ghostty) はすべてツール非依存の「ロール」(契約) として定義し、各ツールは
 ロールの 1 実装として交換・追加できる。詳細は docs/wsm.md の「ロールと実装」節。
 
-Issue トラッカー (Tracker ロール) は外部コマンドのプラグイン。config.toml の
-`[[tracker]]` に列挙し、Jira 等は自作プラグイン (実装言語は問わない) で
-wsm 本体の変更なしに追加できる。docs/wsm.md の「Tracker プラグイン契約」節を参照。
+Issue トラッカー (Tracker ロール) は外部コマンドのプラグイン。設定ファイル
+(config.toml / config.local.toml) の `[[tracker]]` に列挙し、Jira 等は自作プラグイン
+(実装言語は問わない) で wsm 本体の変更なしに追加できる。docs/wsm.md の「Tracker プラグイン契約」節を参照。
 
-構成の健全性 (プラグインのインストール・認証状態など) は `wsm doctor` で
-一望できる。
+構成の健全性 (プラグインのインストール・認証状態、各 tracker がどの設定ファイル
+由来か) は `wsm doctor` で一望できる。
 
 ## 設定
 
 マシン設定は `~/.config/wsm/config.toml` (XDG_CONFIG_HOME 準拠) に置き、server が読む。
-[config.toml.example](config.toml.example) を参照。同名の環境変数はその場の
-オーバーライドとして優先される (詳細は docs/wsm.md の Settings / 環境変数 節)。
+同じディレクトリの `config.local.toml` も追加で読まれ (無ければ無視)、トップレベル値は
+こちらが後勝ち、`[[tracker]]` / `[[repo]]` は連結される。dotfiles が生成・管理する値
+(マシン導出値と全マシン共通の値) を config.toml に、手書きのマシン・所属固有の値を
+config.local.toml に、という使い分けを想定する。
+[config.toml.example](config.toml.example) と [config.local.toml.example](config.local.toml.example)
+を参照。同名の環境変数はその場のオーバーライドとして優先される
+(詳細は docs/wsm.md の Settings / 環境変数 節)。
 
 ## 前提ツール
 
@@ -53,7 +58,7 @@ wsm 本体の変更なしに追加できる。docs/wsm.md の「Tracker プラ�
 取得する (タグ push で CI がビルド・添付する)。
 
 - `wsm-server-aarch64-apple-darwin` → `~/.local/bin/wsm-server` (ホストのみ)
-- `wsm-tracker-github-api-aarch64-apple-darwin` → `~/.local/bin/wsm-tracker-github-api` (ホストのみ。config.toml の `[[tracker]]` で登録。推奨)
+- `wsm-tracker-github-api-aarch64-apple-darwin` → `~/.local/bin/wsm-tracker-github-api` (ホストのみ。設定ファイルの `[[tracker]]` で登録。推奨)
 - `wsm-tracker-github-aarch64-apple-darwin` → `~/.local/bin/wsm-tracker-github` (同上。gh CLI 版・階層なし)
 - `wsm` → `~/.local/bin/wsm` (ホスト・DevContainer 共通)
 

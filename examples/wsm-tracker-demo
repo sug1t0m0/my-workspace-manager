@@ -6,7 +6,7 @@
 # - プラグイン実装の見本: 契約 (docs/wsm.md「Tracker プラグイン契約」) を
 #   満たすのに必要なものがシェルスクリプト 1 枚であることを示す
 #
-# 使い方: config.toml に登録し、任意の [[repo]] に tracker = "demo" を付ける。
+# 使い方: config.toml (または config.local.toml) に登録し、任意の [[repo]] に tracker = "demo" を付ける。
 #   [[tracker]]
 #   name = "demo"
 #   path = "/path/to/examples/wsm-tracker-demo"
