@@ -20,6 +20,7 @@ crates/shared              # server と (将来の) client が共有する語彙
 crates/tracker-github-api  # 公式 GitHub プラグイン (API 直叩き・sub-issues 対応。推奨)
 crates/tracker-github      # 公式 GitHub プラグイン (gh CLI 版・階層なし)
 config.toml.example        # マシン設定 (TOML) のサンプル。実体は ~/.config/wsm/config.toml
+config.local.toml.example  # 手書きの overlay のサンプル。実体は ~/.config/wsm/config.local.toml
 ```
 
 Rust 側のクレート/レイヤー構成 (レイヤー構成 節と対応):
@@ -29,7 +30,7 @@ crates/shared/src/domains/      # RepoRef, WorkspaceId, 導出規則, 検証 (�
 crates/server/src/presentations/  # CLI: 引数 → ドメイン型、結果 → JSON / exit code
 crates/server/src/usecases/       # オーケストレーション (依存の順序と合成ビュー)
 crates/server/src/roles/          # Tracker / RepoStore / SessionManager / Worktree / DevContainer
-crates/server/src/infra/          # exec (プロセス起動), settings (config.toml)
+crates/server/src/infra/          # exec (プロセス起動), settings (config.toml + config.local.toml)
 crates/client/                  # UI を Rust 化するときにここへ (現在は bin/wsm の zsh)
 ```
 
@@ -268,9 +269,10 @@ Worktree ロールは関与しない。
 
 Workspace に紐づくターミナルセッションの管理。現在の実装は tmux と herdr。
 
-使えるマネージャーは config.toml に **パス付きで列挙したものだけ**
-(`tmux_path` / `herdr_path`。Settings 節)。ファイルでの出現順が選択 UI の
-並び順。既定は `default_session_manager` で明示し、未指定なら列挙の先頭。
+使えるマネージャーは設定ファイル (config.toml / config.local.toml) に
+**パス付きで列挙したものだけ** (`tmux_path` / `herdr_path`。Settings 節)。
+ファイルでの出現順が選択 UI の並び順 (2 ファイルの合成規則は Settings 節)。
+既定は `default_session_manager` で明示し、未指定なら列挙の先頭。
 パスが設定されていないマネージャーは存在しない扱いになり、
 選択・プローブ・破棄のすべてから外れる。**組み込みのフォールバックはない**
 (1 つも設定されていなければ open はエラー)。その場のオーバーライドは
@@ -453,14 +455,15 @@ UI はマネージャー非依存のまま。
 
 ### Settings
 
-マシン設定はホスト側の設定ファイル `~/.config/wsm/config.toml`
-(`XDG_CONFIG_HOME` 準拠) に置き、server が読む。server は常にホストで動くため、
-transport にかかわらず同じ設定が見える。フォーマットは TOML
-(Rust の設定エコシステム標準。キーは snake_case でそのまま struct にマップできる)。
+マシン設定はホスト側の設定ファイル `~/.config/wsm/config.toml` と、同じ
+ディレクトリの `config.local.toml` (overlay。どちらも `XDG_CONFIG_HOME` 準拠)
+に置き、server が読む。server は常にホストで動くため、transport にかかわらず
+同じ設定が見える。フォーマットは TOML (toml crate で解析。値はすべて文字列で、
+数値・真偽値は設定誤り)。
 
 | キー | 内容 |
 |---|---|
-| `tmux_path` / `herdr_path` | セッションマネージャーの列挙 (バイナリの絶対パス、チルダ可)。出現順が選択 UI の並び順。未設定のマネージャーは選択不能 |
+| `tmux_path` / `herdr_path` | セッションマネージャーの列挙 (バイナリの絶対パス、チルダ可)。出現順が選択 UI の並び順 (2 ファイルの合成は下記)。未設定 (空文字も同じ) のマネージャーは選択不能 |
 | `default_session_manager` | 既定のセッションマネージャー (未指定なら列挙の先頭) |
 | `worktree_root` | worktree の置き場 (既定 `~/worktrees`) |
 | `devcontainer_shell` | 🐳 ウィンドウで docker exec するシェル (既定 `zsh`) |
@@ -469,8 +472,45 @@ transport にかかわらず同じ設定が見える。フォーマットは TOM
 | `default_tracker` | 既定のトラッカー (未指定なら列挙の先頭) |
 | `[[repo]]` | ghq 管理外のリポジトリの登録 (複数可)。キーは `path` (クローンの場所、必須)、`host` (worktree 導出用、必須)、`ns` (必須)、`name` (省略時 path の basename)、`tracker` (省略時 default_tracker)。必須キーの欠落や形の不正は error JSON (黙って捨てない) |
 
-優先順位: 環境変数 > 設定ファイル > 組み込み既定値。環境変数は
-「その場のオーバーライド」(UI の `-m` フラグ等) にのみ使う。
+優先順位: 環境変数 > `config.local.toml` > `config.toml` > 組み込み既定値。
+環境変数は「その場のオーバーライド」(UI の `-m` フラグ等) にのみ使う。
+
+#### config.local.toml (overlay)
+
+想定する使い分けは、`config.toml` = dotfiles (chezmoi) が生成・管理する値
+(マシン導出値と全マシン共通の値)、`config.local.toml` = 手書きのマシン・所属
+固有の値 (「dotfiles との境界」節)。境界の軸は「バージョン管理されているか」。
+server はどちらも同じ文法で読み、用途 (生成か手書きか) は区別せず次の規則で
+合成する。どちらも無ければ空として扱い、両方無くても読み込みではエラーにしない
+(未設定の検出は機能ごとのエラーと `wsm doctor` に任せる)。
+
+- トップレベルの値は `config.local.toml` が後勝ち
+- `[[tracker]]` は連結 (`config.toml` → `config.local.toml`)。tracker 名は全体で
+  一意で、同名は `tracker name duplicated: <name> (<file>, <file>)`
+  (1 ファイル内の重複も同じ。黙って置き換えると意図しない上書きに気づけない)
+- `[[repo]]` は連結のみ。ns/name の重複は RepoStore が照会時に
+  `ambiguous repository` にする (ghq のリポジトリとの重複もそこでしか分からない)
+- `tmux_path` / `herdr_path` の並びは `config.toml` の出現順を骨格にし、同じ
+  キーは値だけ `config.local.toml` に差し替え (位置はそのまま)、
+  `config.local.toml` にだけあるキーは末尾。空文字のパスは未設定扱いなので、
+  overlay で base のマネージャーを外せる。外すものが `default_session_manager`
+  に指定されているときは overlay で `default_session_manager` も書き換える
+  (さもないと open が `session manager not configured: <name>` で止まる)
+
+設定の型・形の誤りは黙って読み飛ばさず error JSON にする (知らないキーや
+知らない `[table]` は読み飛ばす)。
+
+- TOML として壊れている: `<path>: TOML parse error at line N, column M: <message>`
+  (絶対パス)。閉じ引用符忘れ・重複キーなど、かつて黙って読み飛ばされていた
+  書式ミスもここで止まる
+- ブロックの不備は書かれていたファイル名を出す
+  (`[[repo]] requires ns in config.local.toml`)。`[[tracker]]` / `[[repo]]` の
+  キーは英小文字始まりの `a-z0-9_` のみ (`Owner` のような typo は
+  `Invalid key in [[tracker]]: Owner in <file>`)。ブロック内の値は文字列のみ
+  (`groups = 12` は `[[tracker]] groups must be a string in <file>`)。
+  配列テーブルの typo は `[[Tracker]] is not a known table in <file>`
+- 全体の未設定 (`no tracker configured (add [[tracker]] to config.toml)` 等) の
+  文は従来どおり
 
 設定ファイルに移せないものが 2 種ある。
 
@@ -584,12 +624,17 @@ UI のマネージャー選択はこれを使う (選択肢のハードコード
 ```
 
 `list-trackers`
-→ 設定されたトラッカーの一覧 (設定順) と診断。`installed` はプラグイン
-実行ファイルの存在、`ready` / `diagnosis` / `protocol` は `info-v0` の
-自己診断 (非対応・未インストールなら null)。UI の `wsm doctor` が使う。
-診断コマンドなので [[tracker]] 未設定でもエラーにせず `[]` を返す。
+→ 設定されたトラッカーの一覧と診断。並びは既定を先頭に、以降は設定順
+(config.toml → config.local.toml)。`installed` はプラグイン実行ファイルの存在、
+`ready` / `diagnosis` / `protocol` は `info-v0` の自己診断 (非対応・
+未インストールなら null)。`source` はその tracker が書かれていた設定ファイルの
+パス (`list-devcontainer-configs` の `source` とは別物)。UI の `wsm doctor` が使い、
+`source` の basename を表示して共通の config.toml かこのマシン固有の
+config.local.toml かを見分ける。診断コマンドなので [[tracker]] 未設定でも
+エラーにせず `[]` を返す。
 ```json
-[{"name": "github", "path": "/Users/me/.local/bin/wsm-tracker-github",
+[{"name": "github", "path": "/Users/me/.local/bin/wsm-tracker-github-api",
+  "source": "/Users/me/.config/wsm/config.toml",
   "default": true, "installed": true, "ready": true, "diagnosis": null,
   "protocol": ["list-repo-groups-v0", "..."]}]
 ```
@@ -936,10 +981,10 @@ RepoEntry のメタ情報として worktree のパス導出にだけ使う。そ
 
 ### セッションマネージャーは設定で列挙する(フォールバックなし)
 
-マネージャーの存在とバイナリの場所はマシン依存の値なので、config.toml に
-パス付きで列挙する。ツール側は既定 (tmux) を持たない。選択 UI の並び順は
-設定ファイルの記述順、既定は `default_session_manager` で明示する
-(未指定なら列挙の先頭)。
+マネージャーの存在とバイナリの場所はマシン依存の値なので、設定ファイル
+(config.toml / config.local.toml) にパス付きで列挙する。ツール側は既定 (tmux)
+を持たない。選択 UI の並び順は設定ファイルの記述順、既定は
+`default_session_manager` で明示する (未指定なら列挙の先頭)。
 
 ### 旧形式 tmux セッション名は廃止済み
 
@@ -976,7 +1021,23 @@ DevContainer からの SSH ホワイトリストは `wsm-server` エントリだ
 ### 個人・マシン依存の値はツールに焼き込まない
 
 フォールバック devcontainer 設定のパスなど、個人・マシン依存の値は
-環境変数として dotfiles 側で設定する。ツール側の既定値は「なし」。
+設定ファイルで与える (マシン・所属固有の値は手書きの `config.local.toml`。
+「dotfiles との境界」節)。環境変数はその場のオーバーライドにのみ使う。
+ツール側の既定値は「なし」。
+
+### 設定は config.toml + 手書きの config.local.toml の 2 ファイル
+
+- 動機: 利用側の生成器 (chezmoi) が `[[tracker]]` のキー構成を名指しで
+  転記しており、wsm 側に「予約キー以外は素通し」の契約があるのに、生成器が
+  wsm のスキーマを写し取る構造になっていた。共通/固有の境界をバージョン管理
+  の境界と一致させ、固有値は生成器を通さず手書きの `config.local.toml` に置く
+  (合成規則は Settings 節)
+- `config.d/*.toml` ではなく 1 ファイルで始める。読み込み順・同名検査・由来
+  表示が単純で、必要になれば後から `config.d/` を足しても互換を壊さない
+- 同名の tracker はエラー (overlay 優先で黙って置き換えない)。「設定の誤りは
+  黙って捨てない」方針と、ns 重複のエラーと同じ規則
+- 解析は toml crate に任せる。手書きファイルの typo を行・桁付きで止めるため。
+  この置き換えで、行パーサが黙って読み飛ばしていた書式ミスがエラーになった
 
 ### パス配置とブランチ規則は規約として固定する
 
@@ -998,10 +1059,11 @@ wsm リポジトリと dotfiles の契約になる。
 | dotfiles に残るもの | 内容 |
 |---|---|
 | インストール導線 | `~/.local/bin/wsm-server`・`~/.local/bin/wsm-tracker-github`・`~/.local/bin/wsm` を chezmoi external で GitHub Releases (`releases/latest/download/<asset>`) から取得・配置する |
-| 設定ファイルの配置 | `~/.config/wsm/config.toml` (マシン・個人依存の値) |
+| 設定ファイルの配置 (生成) | `~/.config/wsm/config.toml`: dotfiles (chezmoi) が生成する。マシン導出値 (`tmux_path` / `herdr_path`) と全マシン共通の値 (`default_session_manager`、個人用 `[[tracker]]`)。tracker はキーをループで転記せず TOML の文としてそのまま置く (生成器が wsm のスキーマを写し取らない) |
+| 設定ファイルの配置 (手書き) | `~/.config/wsm/config.local.toml`: chezmoi 管理外の手書き。マシン・所属固有の値 (組織用 `[[tracker]]`、`default_devcontainer_config`、`[[repo]]`、必要なら `default_tracker`)。生成から手書きへ値を移すときは、生成器側の出力を止めてから書く (同名 tracker が両方に存在する瞬間を作らない)。手順の詳細は dotfiles 側 |
 | SSH ホワイトリスト | `allowed-commands.sh` の `wsm-server` エントリ。wsm が必要とするのはこれのみ |
 | SSH 鍵の配置 | DevContainer → ホストの鍵 (`~/.ssh/devcontainer`) |
-| 配布の出し分け | DevContainer にはクライアント (`wsm`) のみ配り、サーバー (`wsm-server`) と設定ファイルは配らない |
+| 配布の出し分け | DevContainer にはクライアント (`wsm`) のみ配り、サーバー (`wsm-server`) と設定ファイル (config.toml / config.local.toml) は配らない |
 
 ## 書き換えの状態
 
@@ -1016,15 +1078,15 @@ add_window 化、gh 直呼びの解消、個人依存既定値の除去、クラ
 
 ## 環境変数
 
-マシン設定は config.toml が正 (Settings 節を参照)。環境変数の役割は
-その場のオーバーライドと、設定ファイルに移せない値に限る。
+マシン設定は設定ファイル (config.toml / config.local.toml) が正 (Settings 節を
+参照)。環境変数の役割はその場のオーバーライドと、設定ファイルに移せない値に限る。
 
 | 変数 | 既定値 | 用途 |
 |---|---|---|
 | `WSM_SESSION_MANAGER` | `default_session_manager` (未指定なら列挙の先頭) | セッションマネージャーのオーバーライド (設定済みのもののみ有効)。UI の `-m` / fzf 選択が export する |
-| `WSM_WORKTREE_ROOT` | (config.toml) | worktree 置き場のオーバーライド |
-| `WSM_DEVCONTAINER_SHELL` | (config.toml) | 🐳 ウィンドウのシェルのオーバーライド |
-| `WSM_DEFAULT_DEVCONTAINER_CONFIG` | (config.toml) | フォールバック devcontainer 設定のオーバーライド |
+| `WSM_WORKTREE_ROOT` | (設定ファイル) | worktree 置き場のオーバーライド |
+| `WSM_DEVCONTAINER_SHELL` | (設定ファイル) | 🐳 ウィンドウのシェルのオーバーライド |
+| `WSM_DEFAULT_DEVCONTAINER_CONFIG` | (設定ファイル) | フォールバック devcontainer 設定のオーバーライド |
 | `WSM_TRANSPORT` | 自動判別 | server への到達方法の明示指定 (`local` / `ssh`) |
 | `WSM_HOST` | `host.docker.internal` | (ssh transport) SSH 接続先 |
 | `HOST_USER` | なし (ssh transport では必須) | (ssh transport) SSH ユーザー |

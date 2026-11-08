@@ -2,6 +2,13 @@
 # 実ファイルは ~/.config/wsm/config.toml (XDG_CONFIG_HOME 準拠) に置く。
 # 同名の環境変数 (WSM_SESSION_MANAGER 等) はその場のオーバーライドとして優先される。
 # docs/wsm.md の Settings 節を参照。
+#
+# 同じディレクトリの config.local.toml (overlay) も追加で読まれる (無ければ無視)。
+# 想定する使い分け: このファイル = dotfiles が生成・管理する値 (マシン導出値と
+# 全マシン共通の値)、config.local.toml = 手書きのマシン・所属固有の値
+# (config.local.toml.example 参照)。
+# トップレベル値は config.local.toml が後勝ち、[[tracker]] / [[repo]] は連結
+# (同名の tracker はエラー)。
 
 # セッションマネージャーの列挙 (バイナリの絶対パス、チルダ可)。
 # ファイルでの出現順が選択 UI の並び順。
@@ -15,8 +22,9 @@ default_session_manager = "herdr"
 # 既定のトラッカー (未指定なら [[tracker]] の列挙の先頭)
 # default_tracker = "github"
 
-# フォールバック devcontainer 設定 (リポジトリに devcontainer.json がないときの既定)
-default_devcontainer_config = "/path/to/your/default/.devcontainer/devcontainer.json"
+# フォールバック devcontainer 設定 (リポジトリに devcontainer.json がないときの既定)。
+# マシン固有のパスなので config.local.toml に書く想定
+# default_devcontainer_config = "/path/to/your/default/.devcontainer/devcontainer.json"
 
 # worktree の置き場 (既定: ~/worktrees)
 # worktree_root = "~/worktrees"
@@ -26,7 +34,8 @@ default_devcontainer_config = "/path/to/your/default/.devcontainer/devcontainer.
 
 # --- テーブルは末尾にまとめる ---
 # TOML の意味論上、[[...]] テーブルより後ろに置いたトップレベルキーは
-# テーブルのキーと解釈されるため、以降にトップレベルキーを足さないこと。
+# テーブルのキーと解釈されるため、以降にトップレベルキーを足さないこと
+# (config.local.toml でも同じ)。
 
 # Tracker プラグインのインスタンスの列挙 (docs/wsm.md「Tracker プラグイン契約」)。
 # 列挙したものだけが存在する (フォールバックはない)。同じバイナリを別名・
@@ -39,22 +48,6 @@ default_devcontainer_config = "/path/to/your/default/.devcontainer/devcontainer.
 name = "github"
 path = "~/.local/bin/wsm-tracker-github-api"
 
-# organization 用のインスタンスの例:
-# [[tracker]]
-# name = "github-acme"
-# path = "~/.local/bin/wsm-tracker-github-api"
-# owner = "acme-corp"          # → WSM_TRACKER_OWNER (repo-group の照会先)
-# ns = "acme-corp,acme-labs"   # この ns のリポジトリの既定トラッカーになる
-# root_label = "wsm-root"      # → WSM_TRACKER_ROOT_LABEL (このラベルの付いた
-#                              #   ルート Issue だけをグループ一覧に出す)
-# groups = "12,15"             # → WSM_TRACKER_GROUPS (表示する Project id の限定)
-
-# ghq 管理外のリポジトリの登録 (複数可)。識別子は <ns>/<name> になり、
-# worktree は <worktree_root>/<host>/<ns>/<name>/<id> に作られる (ghq のものと共通)。
-# ns/name は ghq のリポジトリも含めて全体で一意であること (重複はエラー)。
-# [[repo]]
-# path = "~/work/aaa"          # クローン本体の場所 (必須)
-# host = "gitlab.example.com"  # worktree パス導出に使う host (必須)
-# ns   = "myteam"              # 識別子の namespace (必須)
-# name = "aaa"                 # 識別子のリポジトリ名 (省略時 path の basename)
-# tracker = "github"           # 使うトラッカー名 (省略時 default_tracker)
+# organization 用のインスタンスや ghq 管理外のリポジトリ ([[repo]]) は
+# 所属・マシン固有の値なので config.local.toml に書く想定
+# (config.local.toml.example に例がある)。

@@ -1,0 +1,43 @@
+# wsm のマシン・所属固有の設定の例 (config.toml の overlay)。
+# 実ファイルは ~/.config/wsm/config.local.toml (config.toml と同じディレクトリ) に
+# 手で書く (dotfiles / chezmoi の管理外)。無ければ無視される。
+# 合成規則は docs/wsm.md の Settings 節: トップレベル値はこちらが後勝ち、
+# [[tracker]] / [[repo]] は config.toml のものに連結 (同名の tracker はエラー)。
+# 優先順位: 環境変数 > config.local.toml > config.toml > 組み込み既定値。
+
+# フォールバック devcontainer 設定 (マシン固有のパス)。実在しないパスは黙って
+# 無視される (doctor には出ない)
+# default_devcontainer_config = "/path/to/your/default/.devcontainer/devcontainer.json"
+
+# 既定のトラッカーを変えたいとき (config.toml 側の tracker も指せる)
+# default_tracker = "github-acme"
+
+# このマシンで使わないマネージャーは空文字で外せる (config.toml の列挙から消える)。
+# 外すものが config.toml 側で default_session_manager に指定されているなら、
+# ここで default_session_manager も書き換える
+# tmux_path = ""
+# default_session_manager = "herdr"
+
+# --- テーブルは末尾にまとめる (config.toml と同じ注意) ---
+
+# organization 用の Tracker インスタンス。owner / ns / root_label / groups は
+# 所属固有の値。キーの意味は config.toml.example の [[tracker]] の注記を参照
+# (値は文字列で書く)。
+[[tracker]]
+name = "github-acme"
+path = "~/.local/bin/wsm-tracker-github-api"
+owner = "acme-corp"          # → WSM_TRACKER_OWNER (repo-group の照会先)
+ns = "acme-corp,acme-labs"   # この ns のリポジトリの既定トラッカーになる
+root_label = "wsm-root"      # → WSM_TRACKER_ROOT_LABEL (このラベルの付いた
+                             #   ルート Issue だけをグループ一覧に出す)
+groups = "12,15"             # → WSM_TRACKER_GROUPS (表示する Project id の限定)
+
+# ghq 管理外のリポジトリの登録 (複数可)。識別子は <ns>/<name> になり、
+# worktree は <worktree_root>/<host>/<ns>/<name>/<id> に作られる (ghq のものと共通)。
+# ns/name は ghq のリポジトリも含めて全体で一意であること (重複は照会時にエラー)。
+# [[repo]]
+# path = "~/work/aaa"          # クローン本体の場所 (必須)
+# host = "gitlab.example.com"  # worktree パス導出に使う host (必須)
+# ns   = "myteam"              # 識別子の namespace (必須)
+# name = "aaa"                 # 識別子のリポジトリ名 (省略時 path の basename)
+# tracker = "github-acme"      # 使うトラッカー名 (省略時 default_tracker)
