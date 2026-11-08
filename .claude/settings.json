@@ -1,4 +1,5 @@
 {
+  "$schema": "https://json.schemastore.org/claude-code-settings.json",
   "permissions": {
     "allow": [
       "Bash(cargo build *)",
@@ -7,16 +8,33 @@
       "Bash(cargo clippy *)",
       "Bash(cargo fmt *)",
       "Bash(zsh -n *)",
-      "Bash(sh tests/*)"
+      "Bash(sh tests/*.sh)"
     ],
     "ask": [
       "Bash(gh issue comment *)",
       "Bash(gh issue create *)",
       "Bash(gh issue edit *)",
       "Bash(gh issue close *)",
+      "Bash(gh issue reopen *)",
+      "Bash(gh issue delete *)",
+      "Bash(gh issue transfer *)",
       "Bash(gh pr create *)",
+      "Bash(gh pr edit *)",
+      "Bash(gh pr comment *)",
+      "Bash(gh pr review *)",
+      "Bash(gh pr ready *)",
       "Bash(gh pr merge *)",
       "Bash(gh pr close *)",
+      "Bash(gh repo create *)",
+      "Bash(gh repo edit *)",
+      "Bash(gh repo delete *)",
+      "Bash(gh project *)",
+      "Bash(gh workflow run *)",
+      "Bash(gh workflow enable *)",
+      "Bash(gh workflow disable *)",
+      "Bash(gh run cancel *)",
+      "Bash(gh run rerun *)",
+      "Bash(gh run delete *)",
       "Bash(gh release *)",
       "Bash(git push *)",
       "Bash(git tag *)"
