@@ -256,7 +256,8 @@ fn probe() -> Result<(), String> {
 
 /// `x-oauth-scopes` ヘッダ (カンマ区切り) に Projects の読み取り権限があるか。
 /// GitHub のスコープは階層で、`project` (読み書き) は `read:project` を含む。
-/// 上位スコープを持つトークンのヘッダには `project` だけが並ぶので、両方を受理する。
+/// GitHub は発行時に包含される下位スコープを落として正規化するため、上位スコープを
+/// 持つトークンのヘッダには `project` だけが並ぶ。よって両方を受理する。
 fn has_project_read_scope(scopes: &str) -> bool {
     scopes
         .split(',')
