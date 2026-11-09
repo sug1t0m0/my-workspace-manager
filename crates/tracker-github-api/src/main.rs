@@ -245,13 +245,23 @@ fn probe() -> Result<(), String> {
         .map_err(|e| format!("GitHub API failed: {e}"))?;
     // ヘッダなし (fine-grained token 等) はスコープを判定できないため ready 扱い
     if let Some(scopes) = response.header("x-oauth-scopes") {
-        if !scopes.split(',').any(|s| s.trim() == "read:project") {
+        if !has_project_read_scope(scopes) {
             return Err("gh token is missing scope read:project \
                  (run: gh auth refresh -h github.com -s read:project)"
                 .to_owned());
         }
     }
     Ok(())
+}
+
+/// `x-oauth-scopes` ヘッダ (カンマ区切り) に Projects の読み取り権限があるか。
+/// GitHub のスコープは階層で、`project` (読み書き) は `read:project` を含む。
+/// 上位スコープを持つトークンのヘッダには `project` だけが並ぶので、両方を受理する。
+fn has_project_read_scope(scopes: &str) -> bool {
+    scopes
+        .split(',')
+        .map(str::trim)
+        .any(|s| s == "read:project" || s == "project")
 }
 
 // --- GitHub との会話 ---

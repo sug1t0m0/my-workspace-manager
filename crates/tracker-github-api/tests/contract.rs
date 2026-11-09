@@ -513,6 +513,25 @@ fn info_reports_missing_read_project_scope_with_fix() {
 }
 
 #[test]
+fn info_reports_ready_with_project_scope() {
+    // Arrange: 上位スコープ project のみ (read:project は別途並ばない)
+    let server = ApiServer::serve(vec![(
+        "X-Oauth-Scopes: gist, project, read:org, repo, workflow\r\n",
+        json!({ "login": "me" }).to_string(),
+    )]);
+    let env = TestEnv::new();
+
+    // Act
+    let out = env.run(&server.url, &["info-v0"]);
+
+    // Assert: project は read:project を含むので不足とは診断しない
+    assert_eq!(out.status, Some(0));
+    let v = out.stdout_json();
+    assert_eq!(v["ready"], true);
+    assert!(v["diagnosis"].is_null(), "no diagnosis expected: {v}");
+}
+
+#[test]
 fn info_reports_ready_and_hierarchical_protocol() {
     // Arrange: スコープが揃っている
     let server = ApiServer::serve(vec![(
