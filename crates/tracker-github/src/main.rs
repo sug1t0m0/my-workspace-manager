@@ -131,7 +131,7 @@ fn info() -> Value {
     let (ready, diagnosis) = match gh(&["api", "user", "-i"]) {
         Err(message) => (false, Some(message)),
         Ok(response) => match scopes_header(&response) {
-            Some(scopes) if !scopes.split(',').any(|s| s.trim() == "read:project") => (
+            Some(scopes) if !has_project_read_scope(scopes) => (
                 false,
                 Some(
                     "gh token is missing scope read:project \
@@ -152,6 +152,17 @@ fn scopes_header(response: &str) -> Option<&str> {
         let (name, value) = line.split_once(':')?;
         name.trim().eq_ignore_ascii_case("x-oauth-scopes").then(|| value.trim())
     })
+}
+
+/// X-Oauth-Scopes の値 (カンマ区切り) に Projects の読み取り権限があるか。
+/// GitHub のスコープは階層で、`project` (読み書き) は `read:project` を含む。
+/// GitHub は発行時に包含される下位スコープを落として正規化するため、上位スコープを
+/// 持つトークンのヘッダには `project` だけが並ぶ。よって両方を受理する。
+fn has_project_read_scope(scopes: &str) -> bool {
+    scopes
+        .split(',')
+        .map(str::trim)
+        .any(|s| s == "read:project" || s == "project")
 }
 
 /// repo-group の owner。[[tracker]] の拡張キー `owner` (WSM_TRACKER_OWNER) が

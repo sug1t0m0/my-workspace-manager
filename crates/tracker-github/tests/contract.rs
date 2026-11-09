@@ -248,6 +248,25 @@ fn info_reports_ready_when_scopes_include_read_project() {
 }
 
 #[test]
+fn info_reports_ready_with_project_scope() {
+    // Arrange: 上位スコープ project のみ (発行時に正規化され read:project は別途並ばない)
+    let env = TestEnv::new();
+    env.stub(
+        "^gh api user -i$",
+        "HTTP/2.0 200 OK\nX-Oauth-Scopes: gist, project, read:org, repo, workflow\n\n{\"login\":\"me\"}\n",
+    );
+
+    // Act
+    let out = env.run(&["info-v0"]);
+
+    // Assert: project は read:project を含むので不足とは診断しない
+    assert_eq!(out.status, Some(0));
+    let v = out.stdout_json();
+    assert_eq!(v["ready"], true);
+    assert_eq!(v["diagnosis"], serde_json::Value::Null);
+}
+
+#[test]
 fn info_reports_missing_read_project_scope_with_fix() {
     // Arrange: ログイン済みだがトークンに read:project がない
     // (プロジェクト照会が黙って空になる、実際に起きた事故のケース)
