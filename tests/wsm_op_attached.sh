@@ -43,6 +43,11 @@ chmod +x "$fakebin/wsm-server" "$fakebin/osascript" "$fakebin/fzf"
 
 PATH="$fakebin:$PATH"
 export PATH
+# bin/wsm (zsh) にユーザーの ~/.zshenv を読ませない。そこで PATH を前置されると、
+# フェイクより先に本物の wsm-server / osascript が見つかってしまう
+ZDOTDIR="$tmp/zdotdir"
+mkdir -p "$ZDOTDIR"
+export ZDOTDIR
 WSM_TRANSPORT=local
 export WSM_TRANSPORT
 
