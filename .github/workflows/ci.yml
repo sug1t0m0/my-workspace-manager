@@ -1,6 +1,8 @@
-# 契約テストを回す。
+# 契約テストと UI の回帰テスト (tests/wsm_*.sh) を回す。
 # macos ランナーを使うのは、実運用環境 (macOS ホスト) と BSD ツール群を
-# 揃えるため。外部コマンドはハーネスがフェイクするため gh 等は不要。
+# 揃えるため。外部コマンドは契約テストのハーネスと UI テストがフェイクするため
+# gh 等は不要。
+# UI テストは bin/wsm を動かすので zsh と jq (macOS に同梱) を使う。
 name: ci
 
 on:
@@ -18,3 +20,5 @@ jobs:
         run: cargo test --test contract
       - name: UI shell test (attached branch)
         run: sh tests/wsm_op_attached.sh
+      - name: UI shell test (work repo picker)
+        run: sh tests/wsm_op_work_repo.sh
