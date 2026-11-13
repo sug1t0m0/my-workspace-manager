@@ -18,7 +18,6 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - name: Contract tests
         run: cargo test --test contract
-      - name: UI shell test (attached branch)
-        run: sh tests/wsm_op_attached.sh
-      - name: UI shell test (work repo picker)
-        run: sh tests/wsm_op_work_repo.sh
+      # tests/wsm_*.sh をすべて回す。テストを足してもここは直さない
+      - name: UI shell tests
+        run: sh tests/run.sh
