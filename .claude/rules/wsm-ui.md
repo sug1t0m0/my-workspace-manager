@@ -42,7 +42,7 @@ UI は fzf 選択と表示整形、Terminal (タブを開く) だけを担う。
 - 新しいテストは `tests/wsm_op_work_repo.sh` を写して始める (フェイク一式、`run_op`、
   アサーション)。`tests/wsm_op_attached.sh` は写さない。`wsm op owner/repo#42` のように
   ターゲットを直接指定して fzf を通さないテストで、`fake_errors` の導入前に書いたため、
-  下の偽 fzf と `fake_errors` の約束をまだ満たしていない
+  下の偽 fzf と `fake_errors` の約束をまだ満たしていない (#24)
 - POSIX sh で書き、`mktemp -d` の一時ディレクトリに PATH 先頭のフェイク
   (`wsm-server`, `fzf`, `osascript`) を置いて `bin/wsm` を丸ごと実行する。関数を直接呼ばない
   (関数の分け方を書き換えてもテストをそのまま使えるように)。実際の Ghostty やサーバーには触れない
