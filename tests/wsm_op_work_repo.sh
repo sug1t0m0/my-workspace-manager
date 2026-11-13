@@ -56,7 +56,7 @@ EOF
 # fzf フェイク: --prompt で画面を見分け、FAKE_FZF_<画面> の答えを返す。
 # 答えは空白区切りで、その画面の n 回目の呼び出しに n 番目を使う。
 #   数字 N .. N 行目を Enter で選ぶ
-#   left .... ← を押す
+#   left .... ← を押す (--expect のある画面だけ。本物は --expect がないと ← で閉じない)
 #   esc ..... ESC (出力なし、終了コード 130)
 # 答えが足りない・不正なときは ESC にせず fake_errors に書く (打ち間違いで
 # ESC のケースが誤って通るのを防ぐ)。オプションは bin/wsm が --opt=value の
@@ -94,10 +94,12 @@ case "$answer" in
   esc)
     exit 130 ;;
   left)
+    [ "$expect" = true ] || bad "${n} 回目の答え left は --expect のない画面では使えない"
     key=left
     line=$(sed -n 1p "$FAKE_DIR/fzf_in_$screen") ;;
   "")
-    bad "${n} 回目の呼び出しに答えがない (画面が想定より多く出たか、esc の書き忘れ)" ;;
+    var=FAKE_FZF_$(printf '%s' "$screen" | tr '[:lower:]' '[:upper:]')
+    bad "${n} 回目の呼び出しに答えがない (画面が想定より多く出たか、esc の書き忘れか、${var} の export 漏れ)" ;;
   *[!0-9]*)
     bad "${n} 回目の答え「${answer}」が不正 (数字 / left / esc を答えに書く)" ;;
   *)
