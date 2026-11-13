@@ -25,7 +25,7 @@ fzf 選択と表示だけを担う。Tracker は外部コマンドのプラグ�
 
 - 契約テスト (受け入れ条件): `cargo test --test contract` (3 クレート分が走る)。
   1 クレートだけなら `cargo test -p wsm-server --test contract` のように `-p` で絞る
-- UI の回帰テスト: `sh tests/wsm_op_attached.sh`。構文確認: `zsh -n bin/wsm`
+- UI の回帰テスト: `sh tests/run.sh` (1 本だけなら `sh tests/<file>.sh`)。構文確認: `zsh -n bin/wsm`
 - 開発中のサーバーを UI に掴ませる: `PATH="$PWD/target/debug:$PATH" wsm ...`
 - 配布はタグ `v*` の push → GitHub Actions が Release に添付 → dotfiles 側が配置する。
   手順は `/release` スキル (ユーザーが起動する)。`~/.local/bin` のバイナリを手で上書きしない
