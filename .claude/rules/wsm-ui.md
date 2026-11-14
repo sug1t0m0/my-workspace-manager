@@ -32,11 +32,41 @@ UI は fzf 選択と表示整形、Terminal (タブを開く) だけを担う。
 - `set -euo pipefail` 下で `fzf` のキャンセル (非ゼロ) を `|| true` で受ける
 - `-m/--manager` の指定は SSH transport では server に届かない (警告を出すだけ)
 
-## 回帰テスト (`tests/wsm_op_attached.sh`)
+## 回帰テスト (`tests/wsm_*.sh`)
 
+| ファイル | 固定している分岐 |
+|---|---|
+| `tests/wsm_op_attached.sh` | open 応答の `attached` でタブを開くか (issue #5)。macOS 以外では skip |
+| `tests/wsm_op_work_repo.sh` | 作業リポジトリ選択 (`_pick_work_repo`) と ← / ESC / 選択 (`_fzf_with_back`) (issue #12) |
+
+- 新しいテストは `tests/wsm_op_work_repo.sh` を写して始める (フェイク一式、`run_op`、
+  アサーション)。`tests/wsm_op_attached.sh` は写さない。`wsm op owner/repo#42` のように
+  ターゲットを直接指定して fzf を通さないテストで、`fake_errors` の導入前に書いたため、
+  下の偽 fzf と `fake_errors` の約束をまだ満たしていない (#24)
 - POSIX sh で書き、`mktemp -d` の一時ディレクトリに PATH 先頭のフェイク
-  (`wsm-server`, `osascript`, `fzf`) を置いて `bin/wsm` を直接実行する。
-  実際の Ghostty やサーバーには触れない
-- フェイクの応答は環境変数 (例 `FAKE_ATTACHED`) で切り替え、副作用はマーカーファイルで検出する
-- 新しい分岐を固定するときは同じ方式でケースを足す。CI (ci.yml) で `sh tests/wsm_op_attached.sh`
-  として実行される。macOS 以外では skip
+  (`wsm-server`, `fzf`, `osascript`) を置いて `bin/wsm` を丸ごと実行する。関数を直接呼ばない
+  (関数の分け方を書き換えてもテストをそのまま使えるように)。実際の Ghostty やサーバーには触れない
+- `ZDOTDIR` を空ディレクトリに向ける。`~/.zshenv` が PATH を前置すると、フェイクより先に
+  本物の `wsm-server` / `fzf` が見つかる
+- 変数の直後に日本語が続くときは `${var}` と書く。macOS の `/bin/sh` (bash 3.2) は UTF-8
+  ロケールで日本語のバイトを変数名に含める。`set -u` のテスト本体では unbound variable で止まり、
+  `set -u` のないフェイクでは値が黙って消えて文字が化ける (`$1` などの位置パラメータは 1 桁で
+  切れるので影響しない)
+- フェイクの応答は環境変数 (例 `FAKE_ATTACHED`、`FAKE_FZF_<画面名の大文字>`) で切り替え、
+  呼び出しと副作用はファイルに記録して検出する
+- 偽 fzf は `--prompt` で画面を見分ける。`--expect` のある画面では本物と同じ形 (1 行目 = 押したキー、
+  2 行目 = 隠した列も含む行全体)、ない画面では行全体だけで答える。答えは画面ごとに `N` (N 行目) /
+  `left` / `esc` を呼び出し順に書く。足りないときは ESC にせず失敗させる
+- `left` は `_fzf_with_back` を通る画面 (`--expect=left`) でだけ書ける。fzf を直接呼ぶ画面
+  (Session manager、Container、`wsm rm`) で書くと偽 fzf が失敗させる (本物は ← で閉じない)
+- 新しい画面を通すときは、偽 fzf の prompt の `case` に画面名を足し、答えの変数
+  `FAKE_FZF_<画面名の大文字>` を既定値・`export`・`start_case` の 3 か所に足す
+  (`export` を忘れると、偽 fzf には「答えがない」と見える)。偽 fzf は `--opt=value` の形だけ
+  読むので、bin/wsm 側も fzf のオプションはその形で渡す (`--multi` の複数選択は未対応)
+- フェイクの想定外の使われ方 (知らない画面・サブコマンド・引数、答えの不足・不正) は
+  `fake_errors` に書き、`bin/wsm` を実行するたびに確かめる。`bin/wsm` は fzf と server の
+  失敗を捨てる経路があり、終了コードでは伝わらない
+- ピッカーの分岐を変えたら、対応するケースを足す。分岐のまとまりごとに
+  `tests/wsm_<コマンド>_<分岐>.sh` を作り、上の表に 1 行足す。CI は `tests/run.sh` で
+  `tests/wsm_*.sh` をすべて回すので、ci.yml は直さない。
+  補助スクリプトは `wsm_` で始めない (`tests/run.sh` がテストとして実行する)
